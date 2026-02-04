@@ -2,7 +2,7 @@
 
 \set schema public
 
-\i test/helpers/setup.sql
+\i test/load.sql
 
 \i test/core/functions.sql
 

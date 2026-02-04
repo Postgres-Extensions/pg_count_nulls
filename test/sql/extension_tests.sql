@@ -1,7 +1,7 @@
 \set ECHO none
 
 \set schema schema_to_load_count_nulls
-\i test/helpers/setup.sql
+\i test/load.sql
 
 \set schema public
 \i test/core/functions.sql
