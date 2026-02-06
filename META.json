@@ -16,7 +16,7 @@
     "name": "count_nulls",
 
     "X_comment": "REQUIRED. Version of the distribution. http://pgxn.org/spec/#version",
-    "version": "0.9.7",
+    "version": "1.0.0",
 
     "X_comment": "REQUIRED. Short description of distribution.",
     "abstract": "Count the number of null arguments",
@@ -43,7 +43,7 @@
             "file": "sql/count_nulls.sql",
 
             "X_comment": "REQUIRED. Version the extension is at.",
-            "version": "0.9.6",
+            "version": "1.0.0",
 
             "X_comment": "Optional: \"abstract\": Description of the extension.",
             "abstract": "Count the number of null arguments",
