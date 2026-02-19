@@ -330,7 +330,7 @@ run_pgtle_sql() {
         if [ -f "$sql_file" ]; then
             found=1
             echo "Running $sql_file..." >&2
-            psql --no-psqlrc -v ON_ERROR_STOP=1 --file="$sql_file" || exit 1
+            psql --no-psqlrc --file="$sql_file" || exit 1
         fi
     done
     
@@ -545,7 +545,10 @@ discover_sql_files() {
     UPGRADE_FILES=()  # Reset array
     debug 30 "discover_sql_files: Reset UPGRADE_FILES array"
     while IFS= read -r -d '' file; do
-        # Empty upgrade files are allowed (no-op upgrades)
+        # Error on empty upgrade files
+        if [ ! -s "$file" ]; then
+            die 1 "Empty upgrade file found: $file"
+        fi
         local basename=$(basename "$file" .sql)
         local dash_count=$(echo "$basename" | grep -o -- "--" | wc -l | tr -d '[:space:]')
         if [ "$dash_count" -eq 2 ]; then
@@ -612,7 +615,6 @@ wrap_sql_content() {
     validate_delimiter "$sql_file"
 
     # Output wrapped SQL with proper indentation
-    # Empty files are valid (no-op upgrades)
     echo "  ${PGTLE_DELIMITER}"
     cat "$sql_file"
     echo "  ${PGTLE_DELIMITER}"
@@ -659,17 +661,17 @@ generate_header() {
  *   - Upgrade paths: ${upgrade_count} path(s)
  *   - Default version: ${DEFAULT_VERSION}
  *
- * Installation:
- *   Recommended: make run-pgtle
- *   (or: pgxntool/pgtle.sh --run)
+ * Installation instructions:
+ *   1. Ensure pg_tle is installed:
+ *      CREATE EXTENSION pg_tle;
  *
- *   This automatically detects your pg_tle version and runs the correct file.
+ *   2. Ensure you have pgtle_admin role:
+ *      GRANT pgtle_admin TO your_username;
  *
- *   Prerequisites:
- *   - pg_tle extension installed (CREATE EXTENSION pg_tle;)
- *   - pgtle_admin role (GRANT pgtle_admin TO your_username;)
+ *   3. Run this file:
+ *      psql -f $(basename "$output_file")
  *
- *   After registration, create the extension:
+ *   4. Create the extension:
  *      CREATE EXTENSION ${EXTENSION};
  *
  * Version compatibility:
@@ -797,8 +799,8 @@ DO \$\$
 BEGIN
     PERFORM pgtle.uninstall_extension('${EXTENSION}');
 EXCEPTION
-    WHEN no_data_found THEN
-        -- Extension not registered yet (pg_tle raises P0002, not 42704)
+    WHEN undefined_object THEN
+        -- Extension might not exist yet
         NULL;
 END
 \$\$;
