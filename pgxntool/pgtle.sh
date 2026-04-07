@@ -564,8 +564,8 @@ discover_sql_files() {
         echo "    - $f" >&2
     done
 
-    debug 30 "discover_sql_files: Checking UPGRADE_FILES array, count=${#UPGRADE_FILES[@]:-0}"
-    if [ ${#UPGRADE_FILES[@]:-0} -gt 0 ]; then
+    debug 30 "discover_sql_files: Checking UPGRADE_FILES array, count=${#UPGRADE_FILES[@]}"
+    if [ ${#UPGRADE_FILES[@]} -gt 0 ]; then
         echo "  Found ${#UPGRADE_FILES[@]} upgrade script(s):" >&2
         debug 30 "discover_sql_files: Iterating over ${#UPGRADE_FILES[@]} upgrade files"
         for f in "${UPGRADE_FILES[@]}"; do
@@ -633,8 +633,8 @@ build_requires_array() {
 generate_header() {
     local pgtle_version="$1"
     local output_file="$2"
-    local version_count=${#VERSION_FILES[@]:-0}
-    local upgrade_count=${#UPGRADE_FILES[@]:-0}
+    local version_count=${#VERSION_FILES[@]}
+    local upgrade_count=${#UPGRADE_FILES[@]}
 
     # Determine version compatibility message
     local compat_msg
@@ -760,8 +760,8 @@ generate_pgtle_sql() {
     # Ensure arrays are initialized (defensive programming)
     # Arrays should already be initialized at top level, but ensure they exist
     debug 30 "generate_pgtle_sql: Checking array initialization"
-    debug 30 "generate_pgtle_sql: VERSION_FILES is ${VERSION_FILES+set}, count=${#VERSION_FILES[@]:-0}"
-    debug 30 "generate_pgtle_sql: UPGRADE_FILES is ${UPGRADE_FILES+set}, count=${#UPGRADE_FILES[@]:-0}"
+    debug 30 "generate_pgtle_sql: VERSION_FILES is ${VERSION_FILES+set}, count=${#VERSION_FILES[@]}"
+    debug 30 "generate_pgtle_sql: UPGRADE_FILES is ${UPGRADE_FILES+set}, count=${#UPGRADE_FILES[@]}"
     
     if [ -z "${VERSION_FILES+set}" ]; then
         echo "WARNING: VERSION_FILES not set, initializing" >&2
@@ -819,7 +819,7 @@ EOF
         fi
 
         # Install all upgrade paths
-        local upgrade_count=${#UPGRADE_FILES[@]:-0}
+        local upgrade_count=${#UPGRADE_FILES[@]}
         debug 30 "generate_pgtle_sql: upgrade_count=$upgrade_count"
         if [ "$upgrade_count" -gt 0 ]; then
             debug 30 "generate_pgtle_sql: Processing $upgrade_count upgrade path(s)"
