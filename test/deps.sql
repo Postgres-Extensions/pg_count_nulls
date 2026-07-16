@@ -1,5 +1,3 @@
--- Note: pgTap is loaded by setup.sql
-
 -- Add any test dependency statements here
 -- IF NOT EXISTS will emit NOTICEs, which is annoying
 SET client_min_messages = WARNING;
