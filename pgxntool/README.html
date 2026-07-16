@@ -451,14 +451,17 @@ body.book #toc,body.book #preamble,body.book h1.sect0,body.book .sect1>h2{page-b
 <ul class="sectlevel2">
 <li><a href="#_html">4.1. html</a></li>
 <li><a href="#_test">4.2. test</a></li>
-<li><a href="#_testdeps">4.3. testdeps</a></li>
-<li><a href="#_results">4.4. results</a></li>
-<li><a href="#_tag">4.5. tag</a></li>
-<li><a href="#_dist">4.6. dist</a></li>
-<li><a href="#_pgxntool_sync">4.7. pgxntool-sync</a></li>
-<li><a href="#_pgtle">4.8. pgtle</a></li>
-<li><a href="#_check_pgtle">4.9. check-pgtle</a></li>
-<li><a href="#_run_pgtle">4.10. run-pgtle</a></li>
+<li><a href="#_test_build">4.3. test-build</a></li>
+<li><a href="#_testinstall">4.4. test/install</a></li>
+<li><a href="#_testdeps">4.5. testdeps</a></li>
+<li><a href="#_results">4.6. results</a></li>
+<li><a href="#_tag">4.7. tag</a></li>
+<li><a href="#_dist">4.8. dist</a></li>
+<li><a href="#_pgxntool_sync">4.9. pgxntool-sync</a></li>
+<li><a href="#_distclean">4.10. distclean</a></li>
+<li><a href="#_pgtle">4.11. pgtle</a></li>
+<li><a href="#_check_pgtle">4.12. check-pgtle</a></li>
+<li><a href="#_run_pgtle">4.13. run-pgtle</a></li>
 </ul>
 </li>
 <li><a href="#_version_specific_sql_files">5. Version-Specific SQL Files</a>
@@ -539,7 +542,10 @@ pgxntool/setup.sh</pre>
 <h2 id="_development"><a class="anchor" href="#_development"></a><a class="link" href="#_development">2. Development</a></h2>
 <div class="sectionbody">
 <div class="paragraph">
-<p>If you want to contribute to pgxntool development, work from the <a href="https://github.com/decibel/pgxntool-test">pgxntool-test</a> repository, not from this repository. That repository contains the test infrastructure and development tools needed to validate changes to pgxntool. This repository contains only the framework files that get embedded into extension projects via <code>git subtree</code>.</p>
+<p>If you want to contribute to pgxntool development, work from the <a href="https://github.com/Postgres-Extensions/pgxntool-test">pgxntool-test</a> repository, not from this repository. That repository contains the test infrastructure and development tools needed to validate changes to pgxntool. This repository contains only the framework files that get embedded into extension projects via <code>git subtree</code>.</p>
+</div>
+<div class="paragraph">
+<p>Changes are normally paired across both repos: a <code>pgxntool</code> change should come with a matching branch (same name, on the same account) and PR in <code>pgxntool-test</code>, and CI enforces this pairing. See the <a href="https://github.com/Postgres-Extensions/pgxntool-test#ci-and-contributing">CI and Contributing</a> section in pgxntool-test for the full workflow.</p>
 </div>
 </div>
 </div>
@@ -599,7 +605,190 @@ While you can still run <code>make installcheck</code> or any other valid PGXS m
 </div>
 </div>
 <div class="sect2">
-<h3 id="_testdeps"><a class="anchor" href="#_testdeps"></a><a class="link" href="#_testdeps">4.3. testdeps</a></h3>
+<h3 id="_test_build"><a class="anchor" href="#_test_build"></a><a class="link" href="#_test_build">4.3. test-build</a></h3>
+<div class="paragraph">
+<p>Validates that extension SQL files are syntactically correct before running the full test suite. This feature runs SQL files from <code>test/build/</code> through <code>pg_regress</code>, providing better error messages than <code>CREATE EXTENSION</code> failures when there are syntax errors in your extension code.</p>
+</div>
+<div class="paragraph">
+<p><strong>How it works:</strong></p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Place SQL files in <code>test/build/*.sql</code></p>
+</li>
+<li>
+<p>Place expected output in <code>test/build/expected/*.out</code></p>
+</li>
+<li>
+<p>These files run through <code>pg_regress</code> before <code>make test</code> runs the main test suite</p>
+</li>
+<li>
+<p>If any build test fails, the test run stops immediately with clear error messages</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p><strong>Directory structure:</strong></p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>test/build/
+├── *.sql              # SQL test files (checked in)
+├── expected/          # Expected output files (checked in)
+│   └── *.out
+└── sql/               # GENERATED - do not edit or check in
+    └── *.sql          # Synced from *.sql above</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The <code>sql/</code> subdirectory is generated automatically by <code>make test-build</code>. It is listed in <code>.gitignore</code> and removed by <code>make clean</code>. Do not place files directly in <code>test/build/sql/</code>.</p>
+</div>
+<div class="paragraph">
+<p><strong>Configuration:</strong></p>
+</div>
+<div class="paragraph">
+<p>The feature auto-detects based on whether <code>test/build/*.sql</code> files exist:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Files present → feature enabled automatically</p>
+</li>
+<li>
+<p>No files → feature disabled (no impact on existing projects)</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>You can override auto-detection by setting <code>PGXNTOOL_ENABLE_TEST_BUILD</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre># In your Makefile
+PGXNTOOL_ENABLE_TEST_BUILD = yes  # or no</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><strong>Example: Validate extension SQL compiles</strong></p>
+</div>
+<div class="paragraph">
+<p>Create <code>test/build/build.sql</code> to run your extension&#8217;s SQL directly:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>\set ECHO none
+-- Sets ON_ERROR_STOP, VERBOSITY verbose, and ON_ERROR_ROLLBACK
+\i test/pgxntool/psql.sql
+-- Suppress column headers and row counts for cleaner expected output
+\t
+
+BEGIN;
+SET client_min_messages = WARNING;
+
+-- Install dependencies your extension requires
+CREATE EXTENSION IF NOT EXISTS pgtap CASCADE;
+
+-- Clean slate
+DROP EXTENSION IF EXISTS myext;
+DROP SCHEMA IF EXISTS myext;
+CREATE SCHEMA myext;
+
+-- Run the actual extension SQL (not CREATE EXTENSION)
+-- psql.sql above ensures errors abort immediately with clear messages
+\i sql/myext.sql
+
+-- If we get here, the build succeeded; ON_ERROR_STOP would have aborted on any error above
+\echo # BUILD TEST SUCCEEDED
+ROLLBACK;</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>This approach catches SQL syntax errors <strong>before</strong> running <code>CREATE EXTENSION</code>, giving clearer error messages with line numbers. The <code>ROLLBACK</code> ensures nothing persists—this is purely validation.</p>
+</div>
+<div class="paragraph">
+<p><strong>Why use <code>\i</code> instead of <code>CREATE EXTENSION</code>?</strong></p>
+</div>
+<div class="paragraph">
+<p>When <code>CREATE EXTENSION</code> fails, PostgreSQL shows only "syntax error" with limited context. Running the SQL directly via <code>\i</code> shows the exact line and position of errors, making debugging much faster.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_testinstall"><a class="anchor" href="#_testinstall"></a><a class="link" href="#_testinstall">4.4. test/install</a></h3>
+<div class="paragraph">
+<p>Runs setup files before the main test suite within the same <code>pg_regress</code> invocation. This allows expensive one-time operations (like extension installation) to set up state that persists into the regular test files.</p>
+</div>
+<div class="paragraph">
+<p><strong>How it works:</strong></p>
+</div>
+<div class="olist arabic">
+<ol class="arabic">
+<li>
+<p>Place SQL files in <code>test/install/*.sql</code></p>
+</li>
+<li>
+<p>Place expected output alongside as <code>test/install/*.out</code></p>
+</li>
+<li>
+<p>A schedule file is auto-generated that lists install files with <code>../install/</code> relative paths</p>
+</li>
+<li>
+<p><code>pg_regress</code> processes the install schedule first, then runs regular test files — all in one invocation, so database state persists</p>
+</li>
+</ol>
+</div>
+<div class="paragraph">
+<p><strong>Directory structure:</strong></p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>test/install/
+├── *.sql              # SQL setup files (checked in)
+├── *.out              # Expected output (checked in, alongside .sql)
+├── .gitignore         # Ignores pg_regress artifacts (*.out.diff)
+└── schedule           # GENERATED - auto-created by make</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>The <code>schedule</code> file is generated automatically and listed in <code>.gitignore</code>. Do not edit it.</p>
+</div>
+<div class="paragraph">
+<p><strong>Configuration:</strong></p>
+</div>
+<div class="paragraph">
+<p>The feature auto-detects based on whether <code>test/install/*.sql</code> files exist:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>Files present → feature enabled automatically</p>
+</li>
+<li>
+<p>No files → feature disabled (no impact on existing projects)</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>You can override auto-detection by setting <code>PGXNTOOL_ENABLE_TEST_INSTALL</code>:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre># In your Makefile
+PGXNTOOL_ENABLE_TEST_INSTALL = yes  # or no</pre>
+</div>
+</div>
+<div class="paragraph">
+<p><strong>Why this is useful:</strong></p>
+</div>
+<div class="paragraph">
+<p>Without <code>test/install</code>, each test file typically needs to run <code>CREATE EXTENSION</code> in its setup, which adds overhead and doesn&#8217;t allow validating the installation step separately. With <code>test/install</code>, setup runs once before all tests, and any state it creates (tables, extensions, etc.) is available to every subsequent test file.</p>
+</div>
+<div class="paragraph">
+<p><strong>Key detail:</strong> Install files and regular tests run in a single <code>pg_regress</code> invocation. This means the database is NOT dropped between install and test phases — state created by install files persists into the main test suite.</p>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_testdeps"><a class="anchor" href="#_testdeps"></a><a class="link" href="#_testdeps">4.5. testdeps</a></h3>
 <div class="paragraph">
 <p>This rule allows you to ensure certain actions have taken place before running tests. By default it has a single prerequisite, <code>pgtap</code>, which will attempt to install <a href="http://pgtap.org">pgtap</a> from PGXN. This depneds on having the pgxn client installed.</p>
 </div>
@@ -635,7 +824,7 @@ It will probably cause problems if you try to create a <code>testdeps</code> rul
 </div>
 </div>
 <div class="sect2">
-<h3 id="_results"><a class="anchor" href="#_results"></a><a class="link" href="#_results">4.4. results</a></h3>
+<h3 id="_results"><a class="anchor" href="#_results"></a><a class="link" href="#_results">4.6. results</a></h3>
 <div class="paragraph">
 <p>Because <code>make test</code> ultimately runs <code>installcheck</code>, it&#8217;s using the Postgres test suite. Unfortunately, that suite is based on running <code>diff</code> between a raw output file and expected results. I <strong>STRONGLY</strong> recommend you use <a href="http://pgtap.org">pgTap</a> instead! With pgTap, it&#8217;s MUCH easier to determine whether a test is passing or not - tests explicitly pass or fail rather than requiring you to examine diff output. The extra effort of learning pgTap will quickly pay for itself. <a href="https://github.com/decibel/trunklet-format/blob/master/test/sql/base.sql">This example</a> might help get you started.</p>
 </div>
@@ -670,9 +859,36 @@ It will probably cause problems if you try to create a <code>testdeps</code> rul
 <div class="paragraph">
 <p>Never run <code>make results</code> without first verifying the test changes are correct. The <code>results</code> target copies files from <code>test/results/</code> to <code>test/expected/</code>, so running it blindly will make incorrect output become the new expected behavior.</p>
 </div>
+<div class="sect3">
+<h4 id="_verify_results_safeguard"><a class="anchor" href="#_verify_results_safeguard"></a><a class="link" href="#_verify_results_safeguard">4.6.1. verify-results safeguard</a></h4>
+<div class="paragraph">
+<p>By default, <code>make results</code> will refuse to run if <code>test/results/regression.diffs</code> exists (indicating failing tests). This prevents accidentally updating expected files with incorrect output.</p>
+</div>
+<div class="paragraph">
+<p>If tests are failing, you&#8217;ll see:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>ERROR: Tests are failing. Cannot run 'make results'.
+Fix test failures first, then run 'make results'.</pre>
+</div>
+</div>
+<div class="paragraph">
+<p>To disable this safeguard (not recommended):</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre># In your Makefile
+PGXNTOOL_ENABLE_VERIFY_RESULTS = no
+
+# Or on the command line
+make PGXNTOOL_ENABLE_VERIFY_RESULTS=no results</pre>
+</div>
+</div>
+</div>
 </div>
 <div class="sect2">
-<h3 id="_tag"><a class="anchor" href="#_tag"></a><a class="link" href="#_tag">4.5. tag</a></h3>
+<h3 id="_tag"><a class="anchor" href="#_tag"></a><a class="link" href="#_tag">4.7. tag</a></h3>
 <div class="paragraph">
 <p><code>make tag</code> will create a git branch for the current version of your extension, as determined by the META.json file. The reason to do this is so you can always refer to the exact code that went into a released version.</p>
 </div>
@@ -693,7 +909,7 @@ You will be very unhappy if you forget to update the .control file for your exte
 </div>
 </div>
 <div class="sect2">
-<h3 id="_dist"><a class="anchor" href="#_dist"></a><a class="link" href="#_dist">4.6. dist</a></h3>
+<h3 id="_dist"><a class="anchor" href="#_dist"></a><a class="link" href="#_dist">4.8. dist</a></h3>
 <div class="paragraph">
 <p><code>make dist</code> will create a .zip file for your current version that you can upload to PGXN. The file is named after the PGXN name and version (the top-level "name" and "version" attributes in META.json). The .zip file is placed in the <strong>parent</strong> directory so as not to clutter up your git repo.</p>
 </div>
@@ -711,9 +927,9 @@ Part of the <code>clean</code> recipe is cleaning up these .zip files. If you ac
 </div>
 </div>
 <div class="sect2">
-<h3 id="_pgxntool_sync"><a class="anchor" href="#_pgxntool_sync"></a><a class="link" href="#_pgxntool_sync">4.7. pgxntool-sync</a></h3>
+<h3 id="_pgxntool_sync"><a class="anchor" href="#_pgxntool_sync"></a><a class="link" href="#_pgxntool_sync">4.9. pgxntool-sync</a></h3>
 <div class="paragraph">
-<p>This rule will pull down the latest released version of PGXNtool via <code>git subtree pull</code>.</p>
+<p>This rule will pull down the latest released version of PGXNtool via <code>git subtree pull</code> and then reconcile the files <code>setup.sh</code> copied into your project (<code>.gitignore</code>, <code>test/deps.sql</code>) with a 3-way merge.</p>
 </div>
 <div class="admonitionblock note">
 <table>
@@ -734,14 +950,52 @@ Your repository must be clean (no modified files) in order to run this. Running 
 <div class="title">Tip</div>
 </td>
 <td class="content">
-There is also a <code>pgxntool-sync-%</code> rule if you need to do more advanced things.
+The actual work is done by <code>pgxntool/pgxntool-sync.sh</code>, so you can run it directly (<code>pgxntool/pgxntool-sync.sh</code>) if you&#8217;d rather not go through <code>make</code>. It optionally takes <code>&lt;repo&gt;</code> and <code>&lt;ref&gt;</code> arguments to pull from somewhere other than the default.
+</td>
+</tr>
+</table>
+</div>
+<div class="admonitionblock tip">
+<table>
+<tr>
+<td class="icon">
+<div class="title">Tip</div>
+</td>
+<td class="content">
+There is also a <code>pgxntool-sync-%</code> rule if you need to do more advanced things. <code>make pgxntool-sync-&lt;name&gt;</code> pulls from the <code>&lt;repo&gt; &lt;ref&gt;</code> defined by the <code>pgxntool-sync-&lt;name&gt;</code> make variable.
 </td>
 </tr>
 </table>
 </div>
 </div>
 <div class="sect2">
-<h3 id="_pgtle"><a class="anchor" href="#_pgtle"></a><a class="link" href="#_pgtle">4.8. pgtle</a></h3>
+<h3 id="_distclean"><a class="anchor" href="#_distclean"></a><a class="link" href="#_distclean">4.10. distclean</a></h3>
+<div class="paragraph">
+<p><code>make distclean</code> removes generated configuration files (<code>META.json</code>, <code>meta.mk</code>, <code>control.mk</code>) that survive a normal <code>make clean</code>.</p>
+</div>
+<div class="admonitionblock note">
+<table>
+<tr>
+<td class="icon">
+<div class="title">Note</div>
+</td>
+<td class="content">
+PGXS doesn&#8217;t provide any special support for <code>distclean</code> — its built-in <code>distclean</code> target simply depends on <code>clean</code>. PGXNtool uses its own <code>PGXNTOOL_distclean</code> variable to track files that should only be removed by <code>distclean</code>, not <code>clean</code>.
+</td>
+</tr>
+</table>
+</div>
+<div class="paragraph">
+<p>If your extension generates additional files that should be removed by <code>distclean</code> but not <code>clean</code>, you can add them:</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre>PGXNTOOL_distclean += my_generated_config.mk</pre>
+</div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_pgtle"><a class="anchor" href="#_pgtle"></a><a class="link" href="#_pgtle">4.11. pgtle</a></h3>
 <div class="paragraph">
 <p>Generates pg_tle (Trusted Language Extensions) registration SQL files for deploying extensions in managed environments like AWS RDS/Aurora. See <a href="#_pg_tle_Support">[_pg_tle_Support]</a> for complete documentation.</p>
 </div>
@@ -750,7 +1004,7 @@ There is also a <code>pgxntool-sync-%</code> rule if you need to do more advance
 </div>
 </div>
 <div class="sect2">
-<h3 id="_check_pgtle"><a class="anchor" href="#_check_pgtle"></a><a class="link" href="#_check_pgtle">4.9. check-pgtle</a></h3>
+<h3 id="_check_pgtle"><a class="anchor" href="#_check_pgtle"></a><a class="link" href="#_check_pgtle">4.12. check-pgtle</a></h3>
 <div class="paragraph">
 <p>Checks if pg_tle is installed and reports the version. This target:
 - Reports the version from <code>pg_extension</code> if <code>CREATE EXTENSION pg_tle</code> has been run in the database
@@ -766,7 +1020,7 @@ There is also a <code>pgxntool-sync-%</code> rule if you need to do more advance
 </div>
 </div>
 <div class="sect2">
-<h3 id="_run_pgtle"><a class="anchor" href="#_run_pgtle"></a><a class="link" href="#_run_pgtle">4.10. run-pgtle</a></h3>
+<h3 id="_run_pgtle"><a class="anchor" href="#_run_pgtle"></a><a class="link" href="#_run_pgtle">4.13. run-pgtle</a></h3>
 <div class="paragraph">
 <p>Registers all extensions with pg_tle by executing the generated pg_tle registration SQL files in a PostgreSQL database. This target:
 - Requires pg_tle extension to be installed (checked via <code>check-pgtle</code>)
@@ -974,7 +1228,7 @@ If not set PGXNtool will search for first <code>asciidoctor</code>, then <code>a
 <dt class="hdlist1">ASCIIDOC_EXTS</dt>
 <dd>
 <p>File extensions to consider as Asciidoc.
-Defined as <code>+= adoc asciidoc</code>.</p>
+Defined as <code>+= adoc asciidoc asc</code>.</p>
 </dd>
 <dt class="hdlist1">ASCIIDOC_FILES</dt>
 <dd>
@@ -1259,7 +1513,7 @@ Copyright (c) 2026 Jim Nasby &lt;<a href="mailto:Jim.Nasby@gmail.com">Jim.Nasby@
 </div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2026-01-21 16:47:02 -0600
+Last updated 2026-03-26 16:45:03 -0500
 </div>
 </div>
 </body>
