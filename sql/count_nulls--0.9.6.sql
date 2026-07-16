@@ -1,3 +1,4 @@
+/* DO NOT EDIT - AUTO-GENERATED FILE */
 SET client_min_messages = WARNING;
 
 CREATE OR REPLACE FUNCTION null_count(
