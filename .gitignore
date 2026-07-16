@@ -24,6 +24,14 @@ results/
 regression.diffs
 regression.out
 
+# Generated sql/ directory for test/build
+# Created by make test-build. See README.asc for details.
+test/build/sql/
+
+# Auto-generated schedule file for test/install
+# Created by make when test/install/*.sql files exist.
+test/install/schedule
+
 # Misc
 tmp/
 .DS_Store
