@@ -1,10 +1,10 @@
 \set ECHO none
-    # Subtest: _null_count_test.test__check_ncs()
+# Subtest: _null_count_test.test__check_ncs()
     ok 1
     ok 2 - schema schema_to_load_count_nulls should not be in search path
     1..2
 ok 1 - _null_count_test.test__check_ncs
-    # Subtest: _null_count_test.test__definition()
+# Subtest: _null_count_test.test__definition()
     ok 1 - ensure null_count({anyarray}) is not in search_path
     ok 2 - Function schema_to_load_count_nulls.null_count(anyarray) should return integer
     ok 3 - Function schema_to_load_count_nulls.null_count(anyarray) should not be strict
@@ -37,7 +37,7 @@ ok 1 - _null_count_test.test__check_ncs
     ok 30 - Function schema_to_load_count_nulls.not_null_count_trigger() should be IMMUTABLE
     1..30
 ok 2 - _null_count_test.test__definition
-    # Subtest: _null_count_test.test__functionality()
+# Subtest: _null_count_test.test__functionality()
     ok 1 - Test schema_to_load_count_nulls.null_count(a, b, c)
     ok 2 - Test schema_to_load_count_nulls.null_count(json)
     ok 3 - Test schema_to_load_count_nulls.null_count(jsonb)
@@ -79,7 +79,7 @@ ok 2 - _null_count_test.test__definition
     ok 39 - DROP TRIGGER "not_null_AFTER_"
     1..39
 ok 3 - _null_count_test.test__functionality
-    # Subtest: _null_count_test.test__shutdown__drop_all()
+# Subtest: _null_count_test.test__shutdown__drop_all()
     ok 1
     ok 2
     1..2
