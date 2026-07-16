@@ -9,7 +9,10 @@ SET client_min_messages = WARNING;
  * error if the extension is already loaded (because we want to ensure we're
  * getting the very latest version).
  */
-CREATE EXTENSION ...;
+CREATE SCHEMA IF NOT EXISTS :schema;
+SET search_path = :schema;
+
+CREATE EXTENSION count_nulls;
 
 -- Re-enable notices
 SET client_min_messages = NOTICE;
