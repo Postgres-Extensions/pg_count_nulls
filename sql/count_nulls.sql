@@ -1,5 +1,3 @@
-SET client_min_messages = WARNING;
-
 CREATE OR REPLACE FUNCTION null_count(
   VARIADIC argument anyarray
 ) RETURNS int LANGUAGE sql IMMUTABLE AS $body$
