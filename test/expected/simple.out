@@ -1,5 +1,5 @@
 \set ECHO none
-    # Subtest: _null_count_test.test__definition()
+# Subtest: _null_count_test.test__definition()
     ok 1 - Function public.null_count(anyarray) should return integer
     ok 2 - Function public.null_count(anyarray) should not be strict
     ok 3 - Function public.null_count(anyarray) should be IMMUTABLE
@@ -26,7 +26,7 @@
     ok 24 - Function public.not_null_count_trigger() should be IMMUTABLE
     1..24
 ok 1 - _null_count_test.test__definition
-    # Subtest: _null_count_test.test__functionality()
+# Subtest: _null_count_test.test__functionality()
     ok 1 - Test public.null_count(a, b, c)
     ok 2 - Test public.null_count(json)
     ok 3 - Test public.null_count(jsonb)
