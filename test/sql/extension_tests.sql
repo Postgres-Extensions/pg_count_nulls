@@ -1,17 +1,22 @@
 \set ECHO none
 
-\set schema schema_to_load_count_nulls
 \i test/load.sql
 
-\set schema public
 \i test/core/functions.sql
 
---CREATE OR REPLACE FUNCTION ncs() RETURNS name LANGUAGE sql IMMUTABLE AS $$SELECT 'schema_to_load_count_nulls'::name$$;
+-- Unlike simple.sql, this file deliberately leaves search_path as
+-- functions.sql set it (_null_count_test, tap) - the schema count_nulls is
+-- installed into (TEST_SCHEMA / test/deps.sql's :"schema") stays off
+-- search_path, so every check below only passes if functions.sql's
+-- %I-qualified calls (via ncs()) are actually correct, regardless of which
+-- schema TEST_SCHEMA names.
 
 CREATE FUNCTION _null_count_test.test__check_ncs
 () RETURNS SETOF text LANGUAGE plpgsql AS $body$
 DECLARE
-    s CONSTANT name = 'schema_to_load_count_nulls';
+    -- current_setting(), not a psql :"schema" substitution: psql does not
+    -- interpolate variables inside dollar-quoted function bodies.
+    s CONSTANT name = current_setting('count_nulls.test_schema')::name;
 BEGIN
     RETURN NEXT is(
         ncs()
@@ -20,8 +25,7 @@ BEGIN
     RETURN NEXT is(
         current_schemas(true) @> array[s]
         , false
-        --, format('schema %I should not be in search path (%s)', s, current_schemas(true))
-        , format('schema %I should not be in search path', s) --, current_schemas(true))
+        , format('schema %I should not be in search path', s)
     );
 END
 $body$;
@@ -34,7 +38,7 @@ BEGIN
     );
 
     RETURN NEXT lives_ok(
-        $$DROP SCHEMA schema_to_load_count_nulls$$
+        format('DROP SCHEMA %I', current_setting('count_nulls.test_schema'))
     );
 END
 $body$;

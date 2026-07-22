@@ -219,6 +219,10 @@ BEGIN
 END
 $body$;
 
-SET SEARCH_PATH = _null_count_test, tap, :schema;
+-- Deliberately does NOT restore :"schema" (the schema count_nulls is
+-- installed into) onto search_path here - whether the caller wants it there
+-- (testing unqualified/on-search-path use) or not (testing fully-qualified/
+-- off-search-path use) differs per test file, so each caller sets its own
+-- search_path explicitly after \i'ing this file.
 
 -- vi: expandtab sw=2 ts=2
