@@ -6,11 +6,18 @@ jobs:
   # the workflow itself), otherwise the required all-checks-passed check
   # would never report on doc-only pushes and get stuck Pending in branch
   # protection.
+  #
+  # Also derives, from a SINGLE set of constants, the supported-PostgreSQL-
+  # major list the test / extension-update jobs consume (see the "Derive ..."
+  # step) - per Postgres-Extensions/cat_tools PR #48, taken near-verbatim:
+  # count_nulls has no legacy-floor complication (unlike cat_tools's PG10-only
+  # pre-0.2.2 scripts), so this needs only ONE list, not cat_tools's three.
   changes:
-    name: 🔍 Detect docs-only changes
+    name: 🔍 Detect docs-only changes & derive PG matrix
     runs-on: ubuntu-latest
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
+      supported_pg: ${{ steps.pg.outputs.supported_pg }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -69,6 +76,34 @@ jobs:
           echo "$CHANGED"
           echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
 
+      - name: Derive the supported-PostgreSQL-major list
+        id: pg
+        run: |
+          # Spending a dozen-odd lines to replace what looks like a handful of
+          # version references is worth doing anyway: the point is
+          # CONSISTENCY - both the fresh-install `test` matrix and the
+          # `extension-update-test` matrix derive their PostgreSQL set from
+          # this ONE source, so they cannot silently drift onto different
+          # lists. Adding a new major is a one-line NEWEST bump here, not an
+          # edit in N places.
+          #
+          # count_nulls has only ONE floor (unlike cat_tools's separate
+          # current-version floor and legacy pre-0.2.2 floor): 0.9.6 is a
+          # pure-SQL-function install script with no catalog-version
+          # sensitivity, so it installs on every PostgreSQL major count_nulls
+          # supports - there is no PG10-only legacy leg to carve out.
+          NEWEST=17
+          FLOOR=10
+
+          supported=$(seq "$NEWEST" -1 "$FLOOR")
+
+          # Emit a JSON array from a list of ints, for the job matrices to
+          # consume with fromJSON (GitHub evaluates a literal dollar-brace
+          # expression even inside a run block, so none is written here).
+          json() { printf '%s\n' "$@" | paste -sd, - | sed 's/^/[/; s/$/]/'; }
+
+          echo "supported_pg=$(json $supported)" >> "$GITHUB_OUTPUT"
+
   # Baseline: fresh CREATE EXTENSION, across the PG matrix AND a schema
   # matrix (TEST_SCHEMA, picked up from the environment by test/deps.sql via
   # the count_nulls.test_schema GUC - see the Makefile). 'public' is the
@@ -81,7 +116,8 @@ jobs:
     if: needs.changes.outputs.docs_only != 'true'
     strategy:
       matrix:
-        pg: [17, 16, 15, 14, 13, 12, 11, 10]
+        # From the single source in the changes job.
+        pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
         schema: [public, Quoted]
     name: 🐘 PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema }})
     runs-on: ubuntu-latest
@@ -108,7 +144,8 @@ jobs:
     if: needs.changes.outputs.docs_only != 'true'
     strategy:
       matrix:
-        pg: [17, 16, 15, 14, 13, 12, 11, 10]
+        # From the single source in the changes job.
+        pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
         schema: [public, Quoted]
     name: ⬆️ Extension update test on PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema }})
     runs-on: ubuntu-latest
@@ -139,6 +176,16 @@ jobs:
   # with no SELECT-*-over-catalog views, so it has no known
   # pg_upgrade-unsafe old version to bridge past
   # (advanced-extension-testing.md #7/#9).
+  #
+  # Deliberately NOT adding cat_tools's companion `pg-upgrade-stepwise` job
+  # (one cluster climbing every major in sequence, vs. the single big jumps
+  # here): that job exists to catch a regression specific to one particular
+  # major-to-major boundary, which matters for cat_tools's views/functions
+  # that touch catalog internals (advanced-extension-testing.md #7) but not
+  # for count_nulls - pure SQL functions over anyarray/json/jsonb, nothing
+  # version-sensitive to break at a specific boundary. The two big-jump legs
+  # below (10->17, 12->17) already cover the axis that matters here. Revisit
+  # if count_nulls ever grows something catalog-touching.
   pg-upgrade-test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
