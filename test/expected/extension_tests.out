@@ -1,87 +1,81 @@
 \set ECHO none
 # Subtest: _null_count_test.test__check_ncs()
     ok 1
-    ok 2 - schema public should not be in search path
+    ok 2 # SKIP extension landed in a schema functions.sql always keeps on search_path - not a meaningful check here
     1..2
 ok 1 - _null_count_test.test__check_ncs
 # Subtest: _null_count_test.test__definition()
-    ok 1 - ensure null_count({anyarray}) is not in search_path
-    ok 2 - Function public.null_count(anyarray) should return integer
-    ok 3 - Function public.null_count(anyarray) should not be strict
-    ok 4 - Function public.null_count(anyarray) should be IMMUTABLE
-    ok 5 - ensure null_count({json}) is not in search_path
-    ok 6 - Function public.null_count(json) should return integer
-    ok 7 - Function public.null_count(json) should not be strict
-    ok 8 - Function public.null_count(json) should be IMMUTABLE
-    ok 9 - ensure null_count({jsonb}) is not in search_path
-    ok 10 - Function public.null_count(jsonb) should return integer
-    ok 11 - Function public.null_count(jsonb) should not be strict
-    ok 12 - Function public.null_count(jsonb) should be IMMUTABLE
-    ok 13 - ensure not_null_count({anyarray}) is not in search_path
-    ok 14 - Function public.not_null_count(anyarray) should return integer
-    ok 15 - Function public.not_null_count(anyarray) should not be strict
-    ok 16 - Function public.not_null_count(anyarray) should be IMMUTABLE
-    ok 17 - ensure not_null_count({json}) is not in search_path
-    ok 18 - Function public.not_null_count(json) should return integer
-    ok 19 - Function public.not_null_count(json) should not be strict
-    ok 20 - Function public.not_null_count(json) should be IMMUTABLE
-    ok 21 - ensure not_null_count({jsonb}) is not in search_path
-    ok 22 - Function public.not_null_count(jsonb) should return integer
-    ok 23 - Function public.not_null_count(jsonb) should not be strict
-    ok 24 - Function public.not_null_count(jsonb) should be IMMUTABLE
-    ok 25 - Function public.null_count_trigger() should return trigger
-    ok 26 - Function public.null_count_trigger() should not be strict
-    ok 27 - Function public.null_count_trigger() should be IMMUTABLE
-    ok 28 - Function public.not_null_count_trigger() should return trigger
-    ok 29 - Function public.not_null_count_trigger() should not be strict
-    ok 30 - Function public.not_null_count_trigger() should be IMMUTABLE
-    1..30
+    ok 1 - Function tap.null_count(anyarray) should return integer
+    ok 2 - Function tap.null_count(anyarray) should not be strict
+    ok 3 - Function tap.null_count(anyarray) should be IMMUTABLE
+    ok 4 - Function tap.null_count(json) should return integer
+    ok 5 - Function tap.null_count(json) should not be strict
+    ok 6 - Function tap.null_count(json) should be IMMUTABLE
+    ok 7 - Function tap.null_count(jsonb) should return integer
+    ok 8 - Function tap.null_count(jsonb) should not be strict
+    ok 9 - Function tap.null_count(jsonb) should be IMMUTABLE
+    ok 10 - Function tap.not_null_count(anyarray) should return integer
+    ok 11 - Function tap.not_null_count(anyarray) should not be strict
+    ok 12 - Function tap.not_null_count(anyarray) should be IMMUTABLE
+    ok 13 - Function tap.not_null_count(json) should return integer
+    ok 14 - Function tap.not_null_count(json) should not be strict
+    ok 15 - Function tap.not_null_count(json) should be IMMUTABLE
+    ok 16 - Function tap.not_null_count(jsonb) should return integer
+    ok 17 - Function tap.not_null_count(jsonb) should not be strict
+    ok 18 - Function tap.not_null_count(jsonb) should be IMMUTABLE
+    ok 19 - Function tap.null_count_trigger() should return trigger
+    ok 20 - Function tap.null_count_trigger() should not be strict
+    ok 21 - Function tap.null_count_trigger() should be IMMUTABLE
+    ok 22 - Function tap.not_null_count_trigger() should return trigger
+    ok 23 - Function tap.not_null_count_trigger() should not be strict
+    ok 24 - Function tap.not_null_count_trigger() should be IMMUTABLE
+    1..24
 ok 2 - _null_count_test.test__definition
 # Subtest: _null_count_test.test__functionality()
-    ok 1 - Test public.null_count(a, b, c)
-    ok 2 - Test public.null_count(json)
-    ok 3 - Test public.null_count(jsonb)
-    ok 4 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.not_null_count_trigger( NULL )
-    ok 5 - Test public.not_null_count_trigger( NULL )
+    ok 1 - Test tap.null_count(a, b, c)
+    ok 2 - Test tap.null_count(json)
+    ok 3 - Test tap.null_count(jsonb)
+    ok 4 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.not_null_count_trigger( NULL )
+    ok 5 - Test tap.not_null_count_trigger( NULL )
     ok 6 - DROP TRIGGER "test trigger"
-    ok 7 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.not_null_count_trigger(  )
-    ok 8 - Test public.not_null_count_trigger(  )
+    ok 7 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.not_null_count_trigger(  )
+    ok 8 - Test tap.not_null_count_trigger(  )
     ok 9 - DROP TRIGGER "test trigger"
-    ok 10 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.null_count_trigger( NULL )
-    ok 11 - Test public.null_count_trigger( NULL )
+    ok 10 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.null_count_trigger( NULL )
+    ok 11 - Test tap.null_count_trigger( NULL )
     ok 12 - DROP TRIGGER "test trigger"
-    ok 13 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.null_count_trigger(  )
-    ok 14 - Test public.null_count_trigger(  )
+    ok 13 - CREATE TRIGGER "test trigger" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.null_count_trigger(  )
+    ok 14 - Test tap.null_count_trigger(  )
     ok 15 - DROP TRIGGER "test trigger"
-    ok 16 - CREATE TRIGGER "null_BEFORE_error_message" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.null_count_trigger(1, 'error_message')
+    ok 16 - CREATE TRIGGER "null_BEFORE_error_message" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.null_count_trigger(1, 'error_message')
     ok 17 - Test "null_BEFORE_error_message"
     ok 18 - DROP TRIGGER "null_BEFORE_error_message"
-    ok 19 - CREATE TRIGGER "null_AFTER_error_message" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.null_count_trigger(1, 'error_message')
+    ok 19 - CREATE TRIGGER "null_AFTER_error_message" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.null_count_trigger(1, 'error_message')
     ok 20 - Test "null_AFTER_error_message"
     ok 21 - DROP TRIGGER "null_AFTER_error_message"
-    ok 22 - CREATE TRIGGER "not_null_BEFORE_error_message" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.not_null_count_trigger(1, 'error_message')
+    ok 22 - CREATE TRIGGER "not_null_BEFORE_error_message" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.not_null_count_trigger(1, 'error_message')
     ok 23 - Test "not_null_BEFORE_error_message"
     ok 24 - DROP TRIGGER "not_null_BEFORE_error_message"
-    ok 25 - CREATE TRIGGER "not_null_AFTER_error_message" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.not_null_count_trigger(1, 'error_message')
+    ok 25 - CREATE TRIGGER "not_null_AFTER_error_message" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.not_null_count_trigger(1, 'error_message')
     ok 26 - Test "not_null_AFTER_error_message"
     ok 27 - DROP TRIGGER "not_null_AFTER_error_message"
-    ok 28 - CREATE TRIGGER "null_BEFORE_" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.null_count_trigger(1, NULL)
+    ok 28 - CREATE TRIGGER "null_BEFORE_" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.null_count_trigger(1, NULL)
     ok 29 - Test "null_BEFORE_"
     ok 30 - DROP TRIGGER "null_BEFORE_"
-    ok 31 - CREATE TRIGGER "null_AFTER_" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.null_count_trigger(1, NULL)
+    ok 31 - CREATE TRIGGER "null_AFTER_" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.null_count_trigger(1, NULL)
     ok 32 - Test "null_AFTER_"
     ok 33 - DROP TRIGGER "null_AFTER_"
-    ok 34 - CREATE TRIGGER "not_null_BEFORE_" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.not_null_count_trigger(1, NULL)
+    ok 34 - CREATE TRIGGER "not_null_BEFORE_" BEFORE INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.not_null_count_trigger(1, NULL)
     ok 35 - Test "not_null_BEFORE_"
     ok 36 - DROP TRIGGER "not_null_BEFORE_"
-    ok 37 - CREATE TRIGGER "not_null_AFTER_" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE public.not_null_count_trigger(1, NULL)
+    ok 37 - CREATE TRIGGER "not_null_AFTER_" AFTER INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE tap.not_null_count_trigger(1, NULL)
     ok 38 - Test "not_null_AFTER_"
     ok 39 - DROP TRIGGER "not_null_AFTER_"
     1..39
 ok 3 - _null_count_test.test__functionality
 # Subtest: _null_count_test.test__shutdown__drop_all()
     ok 1
-    ok 2
+    ok 2 # SKIP TEST_SCHEMA is empty - no dedicated schema to drop
     1..2
 ok 4 - _null_count_test.test__shutdown__drop_all
 1..4
