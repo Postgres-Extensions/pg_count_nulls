@@ -8,10 +8,11 @@ jobs:
   # protection.
   #
   # Also derives, from a SINGLE set of constants, the supported-PostgreSQL-
-  # major list the test / extension-update jobs consume (see the "Derive ..."
-  # step) - per Postgres-Extensions/cat_tools PR #48, taken near-verbatim:
-  # count_nulls has no legacy-floor complication (unlike cat_tools's PG10-only
-  # pre-0.2.2 scripts), so this needs only ONE list, not cat_tools's three.
+  # major list the test / extension-update-test jobs consume (see the
+  # "Derive ..." step): every job that cares which majors are supported reads
+  # the SAME list, so they can't silently drift onto different sets, and
+  # adding a new major is a one-line change here instead of an edit in
+  # several jobs.
   changes:
     name: 🔍 Detect docs-only changes & derive PG matrix
     runs-on: ubuntu-latest
@@ -28,6 +29,14 @@ jobs:
       - name: Compute per-push changed files
         id: diff
         run: |
+          # Fail safe to running the full matrix: default docs_only to false
+          # immediately, before anything below has a chance to compute or
+          # fail. Writing the same GITHUB_OUTPUT key twice is fine (the last
+          # write wins), so the only way this step ends with docs_only=true
+          # is by genuinely proving it further down - never by skipping past
+          # an edge case with a default.
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+
           if [ "${{ github.event_name }}" = "pull_request" ] && \
              [ "${{ github.event.action }}" = "synchronize" ] && \
              [ -n "${{ github.event.before }}" ]; then
@@ -49,12 +58,11 @@ jobs:
           echo "base=$BASE"
           echo "head=$HEAD"
 
-          # Fail-safe: a missing HEAD, or an all-zeros BASE (e.g. a new
-          # branch's first push, where GitHub reports no prior commit),
-          # means we can't compute a real diff. Run the full matrix rather
-          # than risk skipping tests.
+          # A missing HEAD, or an all-zeros BASE (e.g. a new branch's first
+          # push, where GitHub reports no prior commit), means we can't
+          # compute a real diff. docs_only is already false from above;
+          # just stop here rather than risk skipping tests.
           if [ -z "$HEAD" ] || [ -z "$BASE" ] || [[ "$BASE" =~ ^0+$ ]]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -79,20 +87,19 @@ jobs:
       - name: Derive the supported-PostgreSQL-major list
         id: pg
         run: |
-          # Spending a dozen-odd lines to replace what looks like a handful of
-          # version references is worth doing anyway: the point is
-          # CONSISTENCY - both the fresh-install `test` matrix and the
-          # `extension-update-test` matrix derive their PostgreSQL set from
-          # this ONE source, so they cannot silently drift onto different
-          # lists. Adding a new major is a one-line NEWEST bump here, not an
-          # edit in N places.
+          # A dozen-odd lines to replace what looks like a handful of version
+          # references, but it buys CONSISTENCY: both the fresh-install
+          # `test` matrix and the `extension-update-test` matrix derive their
+          # PostgreSQL set from this ONE source, so they cannot silently
+          # drift onto different lists. Adding a new major is a one-line
+          # NEWEST bump here, not an edit in N places.
           #
-          # count_nulls has only ONE floor (unlike cat_tools's separate
-          # current-version floor and legacy pre-0.2.2 floor): 0.9.6 is a
-          # pure-SQL-function install script with no catalog-version
-          # sensitivity, so it installs on every PostgreSQL major count_nulls
-          # supports - there is no PG10-only legacy leg to carve out.
-          NEWEST=17
+          # Only one floor is needed here: 0.9.6 (the oldest version
+          # count_nulls still ships a full install script for) is pure SQL
+          # over anyarray/json/jsonb with no catalog-version sensitivity, so
+          # it installs on every PostgreSQL major count_nulls supports -
+          # there's no separate legacy-only floor to carve out.
+          NEWEST=18
           FLOOR=10
 
           supported=$(seq "$NEWEST" -1 "$FLOOR")
@@ -106,11 +113,14 @@ jobs:
 
   # Baseline: fresh CREATE EXTENSION, across the PG matrix AND a schema
   # matrix (TEST_SCHEMA, picked up from the environment by test/deps.sql via
-  # the count_nulls.test_schema GUC - see the Makefile). 'public' is the
-  # common case; 'Quoted' requires SQL identifier quoting (mixed case -
-  # unquoted would fold to lowercase and silently test 'public' again),
+  # the count_nulls.test_schema GUC - see the Makefile). Empty ('') runs
+  # WITHOUT specifying a schema at all - CREATE EXTENSION with no targeting,
+  # landing wherever the session's own default search_path resolves.
+  # 'Quoted' runs WITH one explicitly specified, using a name that requires
+  # SQL identifier quoting (mixed case - unquoted would fold to lowercase),
   # exercising the suite's %I schema-qualification rather than just its
-  # literal test data.
+  # literal test data. Both legs matter; neither is redundant with the
+  # other (see the Makefile's TEST_SCHEMA comment).
   test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
@@ -118,8 +128,8 @@ jobs:
       matrix:
         # From the single source in the changes job.
         pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
-        schema: [public, Quoted]
-    name: 🐘 PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema }})
+        schema: ["", Quoted]
+    name: 🐘 PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema == '' && 'none' || matrix.schema }})
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
     env:
@@ -146,8 +156,8 @@ jobs:
       matrix:
         # From the single source in the changes job.
         pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
-        schema: [public, Quoted]
-    name: ⬆️ Extension update test on PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema }})
+        schema: ["", Quoted]
+    name: ⬆️ Extension update test on PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema == '' && 'none' || matrix.schema }})
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
     steps:
@@ -170,22 +180,18 @@ jobs:
   # update. Installs 0.9.6 on an old cluster, plants a dependency guard,
   # binary-pg_upgrades to a newer cluster, updates the extension to current,
   # then runs the suite against the REAL migrated objects in existing mode.
-  # No bridge-update step (unlike cat_tools's pg-upgrade-test, which has to
-  # dig itself out of pg_upgrade-unsafe versions it shipped before this
-  # testing pattern existed): count_nulls has always been pure SQL functions
-  # with no SELECT-*-over-catalog views, so it has no known
-  # pg_upgrade-unsafe old version to bridge past
-  # (advanced-extension-testing.md #7/#9).
+  # No bridge-update step first: count_nulls has always been pure SQL
+  # functions with no SELECT-*-over-catalog views, so it has no known
+  # pg_upgrade-unsafe old version to bridge past.
   #
-  # Deliberately NOT adding cat_tools's companion `pg-upgrade-stepwise` job
-  # (one cluster climbing every major in sequence, vs. the single big jumps
-  # here): that job exists to catch a regression specific to one particular
-  # major-to-major boundary, which matters for cat_tools's views/functions
-  # that touch catalog internals (advanced-extension-testing.md #7) but not
-  # for count_nulls - pure SQL functions over anyarray/json/jsonb, nothing
-  # version-sensitive to break at a specific boundary. The two big-jump legs
-  # below (10->17, 12->17) already cover the axis that matters here. Revisit
-  # if count_nulls ever grows something catalog-touching.
+  # Deliberately not doing a stepwise every-major-in-sequence climb (one
+  # cluster walking 10->11->12->...->newest, vs. the single big jumps here):
+  # that would catch a regression specific to one particular major-to-major
+  # boundary, which would matter if count_nulls had views/functions touching
+  # catalog internals, but it doesn't - pure SQL functions over anyarray/
+  # json/jsonb, nothing version-sensitive to break at a specific boundary.
+  # The two big-jump legs below already cover the axis that matters here.
+  # Revisit if count_nulls ever grows something catalog-touching.
   pg-upgrade-test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
@@ -193,18 +199,18 @@ jobs:
       matrix:
         include:
           - old_pg: "10"
-            new_pg: "17"
-            schema: public
+            new_pg: "18"
+            schema: ""
           - old_pg: "10"
-            new_pg: "17"
+            new_pg: "18"
             schema: Quoted
           - old_pg: "12"
-            new_pg: "17"
-            schema: public
+            new_pg: "18"
+            schema: ""
           - old_pg: "12"
-            new_pg: "17"
+            new_pg: "18"
             schema: Quoted
-    name: 🔄 Binary pg_upgrade ${{ matrix.old_pg }} → ${{ matrix.new_pg }} (schema ${{ matrix.schema }})
+    name: 🔄 Binary pg_upgrade ${{ matrix.old_pg }} → ${{ matrix.new_pg }} (schema ${{ matrix.schema == '' && 'none' || matrix.schema }})
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
     env:
@@ -276,7 +282,7 @@ jobs:
 
   # A single stable check name for use as a required status check in branch
   # protection rules. Matrix jobs produce check names like
-  # "🐘 PostgreSQL 14 (schema public)" which would all need to be listed
+  # "🐘 PostgreSQL 14 (schema none)" which would all need to be listed
   # individually and updated whenever the matrix changes. This job passes if
   # all others passed or were skipped (e.g. the heavy jobs gated off by the
   # `changes` job on a docs-only push), and fails if any failed or were
