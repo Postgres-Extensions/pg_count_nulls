@@ -1,11 +1,13 @@
--- Proves the guard planted by plant_guard.sql actually blocks a
--- non-CASCADE DROP EXTENSION - "prove it, don't assume it"
--- (advanced-extension-testing.md #4). Re-run after every step (install,
--- pg_upgrade, post-upgrade ALTER EXTENSION UPDATE): the guard disappearing
--- at any point means a CASCADE drop happened somewhere upstream, i.e. the
--- "existing" run downstream would actually be a silent fresh install.
---
--- Usage: psql -v ON_ERROR_STOP=1 -f assert_guard.sql
+/*
+ * Proves the guard planted by plant_guard.sql actually blocks a
+ * non-CASCADE DROP EXTENSION - prove it, don't assume it. Re-run after
+ * every step (install, pg_upgrade, post-upgrade ALTER EXTENSION UPDATE):
+ * the guard disappearing at any point means a CASCADE drop happened
+ * somewhere upstream, i.e. the "existing" run downstream would actually be
+ * a silent fresh install.
+ *
+ * Usage: psql -v ON_ERROR_STOP=1 -f assert_guard.sql
+ */
 \set ON_ERROR_STOP on
 
 DO $$

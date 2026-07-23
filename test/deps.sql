@@ -43,36 +43,51 @@ SELECT :'count_nulls_test_load_mode' = 'existing' AS count_nulls_existing_mode
  * TEST_SCHEMA (the count_nulls.test_schema GUC, set via the Makefile):
  * which schema the extension is installed into, for the WHOLE test run -
  * the SAME schema for every test file, not a different literal hardcoded
- * per file. This is what drives the schema x mode CI matrix: at minimum
- * 'public' (the default) and a schema whose name requires SQL identifier
- * quoting (mixed case - unquoted would fold to lowercase and silently test
- * a different, matching schema instead), to exercise test files' %I
- * schema-qualification rather than just their literal test data.
+ * per file. Empty (the default) means "don't target any schema at all" -
+ * the extension lands wherever the session's own default search_path
+ * already resolves. Non-empty explicitly creates and targets that schema,
+ * including a schema whose name requires SQL identifier quoting (mixed
+ * case - unquoted would fold to lowercase), to exercise test files' %I
+ * schema-qualification rather than just their literal test data. Both the
+ * empty and non-empty cases are exercised in CI - genuinely different code
+ * paths, not one a redundant special case of the other.
  *
  * Read with :"schema" (quoted-identifier form) wherever used as a bare
  * identifier below and in the test files, since the quoting-required case
- * is exactly what this exists to exercise.
+ * is exactly what the non-empty case exists to exercise.
+ *
+ * Read without missing_ok, same reasoning as count_nulls.test_load_mode
+ * above: a genuinely unpropagated GUC must fail loudly, not be
+ * indistinguishable from a deliberately empty one.
  */
 SELECT current_setting('count_nulls.test_schema') AS schema
 \gset
+SELECT :'schema' <> '' AS count_nulls_has_schema
+\gset
 
--- :"schema" is created/searched in every mode, including 'existing', even
--- though 'existing' mode never installs the extension into it: test files
--- (e.g. test__shutdown__drop_all's `DROP SCHEMA :"schema"`) expect it to
--- exist regardless of mode, and an empty schema is harmless. IF NOT EXISTS
--- emits NOTICEs, which is annoying.
+\if :count_nulls_has_schema
+/*
+ * :"schema" is created/searched in every mode that has one, including
+ * 'existing' (even though 'existing' mode never installs the extension
+ * into it): test files (e.g. test__shutdown__drop_all's
+ * `DROP SCHEMA :"schema"`) expect it to exist regardless of mode, and an
+ * empty schema is harmless. IF NOT EXISTS emits NOTICEs, which is annoying.
+ */
 SET client_min_messages = WARNING;
 CREATE SCHEMA IF NOT EXISTS :"schema";
 SET search_path = :"schema";
 SET client_min_messages = NOTICE;
+\endif
 
 \if :count_nulls_existing_mode
--- Extension is already installed (real pg_upgrade, or an out-of-band
--- update) - assert it's present and current, but do NOT drop/create/update
--- it. The CI job driving this mode is responsible for having installed the
--- real extension into :"schema" (matching this run's TEST_SCHEMA) before
--- getting here, so the rest of the suite sees the same schema regardless of
--- mode.
+/*
+ * Extension is already installed (real pg_upgrade, or an out-of-band
+ * update) - assert it's present and current, but do NOT drop/create/update
+ * it. The CI job driving this mode is responsible for having installed the
+ * real extension matching this run's TEST_SCHEMA (or the default location,
+ * if empty) before getting here, so the rest of the suite sees the same
+ * schema regardless of mode.
+ */
 DO $$
 DECLARE
   v_installed text := (SELECT extversion FROM pg_extension WHERE extname = 'count_nulls');

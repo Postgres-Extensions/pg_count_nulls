@@ -10,12 +10,12 @@
 #
 # so it lives here once instead of being duplicated as inline YAML. It is NOT
 # CI-only: a developer can run any subcommand locally against a scratch
-# database. Modeled on Postgres-Extensions/cat_tools's bin/test_existing, with
-# two differences: count_nulls has no pg_upgrade-unsafe old versions to bridge
-# past (advanced-extension-testing.md #7/#9 don't apply - it ships no
-# SELECT-*-over-catalog views), and its suite has its OWN legitimate (though
-# harmless - always rolled back) DROP EXTENSION test, so here the guard is
-# dropped before run-suite instead of surviving through it.
+# database. Modeled on Postgres-Extensions/cat_tools's bin/test_existing.
+# Two differences from that script: count_nulls ships no
+# SELECT-*-over-catalog views, so it has no known pg_upgrade-unsafe old
+# version to bridge past before running pg_upgrade; and its own suite has a
+# legitimate (though harmless - always rolled back) DROP EXTENSION test, so
+# here the guard is dropped before run-suite instead of surviving through it.
 #
 # USAGE: bin/test_existing <subcommand> [args]
 #
@@ -44,8 +44,8 @@
 # the extension, the suite would test a FRESH install and hide a regression.
 # We plant an object that HARD-references a count_nulls member so a
 # non-CASCADE DROP EXTENSION fails, and actively PROVE that (see
-# test/pg_upgrade/assert_guard.sql): if the drop unexpectedly succeeds, this
-# script fails CI rather than silently passing.
+# bin/test_existing_sql/assert_guard.sql): if the drop unexpectedly succeeds,
+# this script fails CI rather than silently passing.
 set -euo pipefail
 
 # Run from the repository root (where `make` works and test paths resolve),
@@ -93,7 +93,7 @@ guard_present() {
 # CREATE EXTENSION (and before any update/upgrade) so it persists through them.
 plant_guard() {
   local db=$1 schema=$2
-  psql -d "$db" -v ON_ERROR_STOP=1 -v schema="$schema" -f test/pg_upgrade/plant_guard.sql
+  psql -d "$db" -v ON_ERROR_STOP=1 -v schema="$schema" -f bin/test_existing_sql/plant_guard.sql
   assert_drop_blocked "$db"
 }
 
@@ -102,13 +102,13 @@ plant_guard() {
 # unexpectedly succeeds, or if the extension/guard are missing afterward.
 assert_drop_blocked() {
   local db=$1
-  psql -d "$db" -v ON_ERROR_STOP=1 -f test/pg_upgrade/assert_guard.sql
+  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing_sql/assert_guard.sql
   echo "OK: non-CASCADE DROP EXTENSION is blocked in '$db' (dependency guard effective)"
 }
 
 drop_guard() {
   local db=$1
-  psql -d "$db" -v ON_ERROR_STOP=1 -f test/pg_upgrade/drop_guard.sql
+  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing_sql/drop_guard.sql
 }
 
 assert_version() {
@@ -131,20 +131,33 @@ update_ext() {
   psql_do "$db" -c "ALTER EXTENSION count_nulls UPDATE $to"
 }
 
+# CREATE EXTENSION count_nulls at VERSION, targeting SCHEMA - unless SCHEMA
+# is empty, in which case it's created untouched, wherever the session's
+# own default search_path resolves (ordinarily 'public'). A quoted empty
+# identifier ("") is a real Postgres syntax error, so this can't just always
+# emit `CREATE SCHEMA IF NOT EXISTS "$schema"` - the empty case has to skip
+# that entirely, mirroring test/deps.sql's :count_nulls_has_schema branch.
+create_extension_in_schema() {
+  local db=$1 schema=$2 version=$3 sql=""
+  if [ -n "$schema" ]; then
+    sql="CREATE SCHEMA IF NOT EXISTS \"$schema\"; SET search_path = \"$schema\"; "
+  fi
+  psql_do "$db" -c "${sql}CREATE EXTENSION count_nulls VERSION '$version'"
+}
+
 # ---------------------------------------------------------------------------
 # Subcommand implementations
 # ---------------------------------------------------------------------------
 
 # prepare-old DB SCHEMA INSTALL_VERSION
 #   Old-cluster preparation for pg-upgrade-test: create the database and the
-#   extension at INSTALL_VERSION in SCHEMA, then plant + prove the guard.
-#   No bridge step (unlike cat_tools): count_nulls ships no
-#   SELECT-*-over-catalog views, so it has no known pg_upgrade-unsafe old
-#   version to bridge past (advanced-extension-testing.md #7/#9).
+#   extension at INSTALL_VERSION in SCHEMA, then plant + prove the guard. No
+#   bridge-update step first: count_nulls ships no SELECT-*-over-catalog
+#   views, so it has no known pg_upgrade-unsafe old version to bridge past.
 prepare_old() {
   local db=$1 schema=$2 install=$3
   createdb "$db"
-  psql_do "$db" -c "CREATE SCHEMA IF NOT EXISTS \"$schema\"; SET search_path = \"$schema\"; CREATE EXTENSION count_nulls VERSION '$install'"
+  create_extension_in_schema "$db" "$schema" "$install"
   plant_guard "$db" "$schema"
 }
 
@@ -156,7 +169,7 @@ prepare_old() {
 update_scenario() {
   local db=$1 schema=$2 from=$3
   createdb "$db"
-  psql_do "$db" -c "CREATE SCHEMA IF NOT EXISTS \"$schema\"; SET search_path = \"$schema\"; CREATE EXTENSION count_nulls VERSION '$from'"
+  create_extension_in_schema "$db" "$schema" "$from"
   plant_guard "$db" "$schema"
   update_ext "$db"
   run_suite "$db" "$schema"
@@ -186,8 +199,7 @@ run_suite() {
   #      - it adds nothing here.
   #   2. `make verify-results` (not just `make test`) is the real pass/fail
   #      gate: base.mk's `.IGNORE: installcheck` means `make test` prints
-  #      regression.diffs but exits 0 regardless
-  #      (advanced-extension-testing.md #8). verify-results depends on
+  #      regression.diffs but exits 0 regardless. verify-results depends on
   #      `test`, so it must carry the SAME existing-mode overrides or it
   #      would re-run FRESH (against a new throwaway DB) instead of
   #      verifying THIS existing database.

@@ -7,7 +7,8 @@ testdeps: $(wildcard test/*/*.sql) $(wildcard test/*.sql) # Be careful not to in
 # test in test/build/upgrade.sql and test/deps.sql's update mode can
 # CREATE EXTENSION count_nulls VERSION '0.9.6'.
 # Not covered by base.mk's DATA wildcard, which only picks up upgrade scripts
-# (sql/*--*--*.sql) and the current version file.
+# (sql/*--*--*.sql) and the current version file - a pgxntool bug, filed as
+# Postgres-Extensions/pgxntool#48.
 DATA += sql/count_nulls--0.9.6.sql
 
 # TEST_LOAD_SOURCE selects how test/deps.sql installs the extension for the
@@ -44,18 +45,29 @@ export PGOPTIONS := $(PGOPTIONS) -c count_nulls.test_load_mode=$(TEST_LOAD_SOURC
 # for the WHOLE test run (every test file uses the SAME schema in a given
 # run - previously each test file hardcoded its own literal schema name as a
 # stand-in for real schema-qualification coverage, which only ever tested
-# two fixed, always-lowercase names). Combined with TEST_LOAD_SOURCE this
-# drives a schema x mode CI matrix; in particular, a schema whose name
+# two fixed, always-lowercase names).
+#
+# Empty (the default): don't target any schema at all. The extension
+# installs wherever the session's own default search_path already resolves
+# (ordinarily 'public'), exercising the plain, untouched default-install
+# code path - the "without a schema" leg.
+#
+# Non-empty: explicitly CREATE SCHEMA/SET search_path to that name before
+# installing - the "with a schema" leg. In particular, a schema whose name
 # requires SQL identifier quoting (mixed case - unquoted would silently fold
-# to lowercase and test the wrong, matching schema instead) needs its own
-# leg, not just 'public'. Locally: `make test TEST_SCHEMA=Quoted`.
+# to lowercase) exercises the suite's %I schema-qualification, not just its
+# literal test data. Locally: `make test TEST_SCHEMA=Quoted`.
+#
+# Both legs matter and both run in CI - "without" and "with" are genuinely
+# different code paths (one never touches search_path, the other explicitly
+# targets a schema), not one being a redundant special case of the other.
 #
 # Propagated the same way as TEST_LOAD_SOURCE: via the count_nulls.test_schema
-# GUC, exported unconditionally through PGOPTIONS.
-TEST_SCHEMA ?= public
-ifeq ($(strip $(TEST_SCHEMA)),)
-$(error TEST_SCHEMA must not be empty)
-endif
+# GUC, exported unconditionally through PGOPTIONS. Empty is a valid,
+# deliberate value here (not an error) - deps.sql reads it without
+# missing_ok, so a truly unset GUC (the pipeline failing to propagate at all)
+# still fails loudly, while an explicitly empty one means "no schema".
+TEST_SCHEMA ?=
 export PGOPTIONS := $(PGOPTIONS) -c count_nulls.test_schema=$(TEST_SCHEMA)
 
 # Convenience wrapper: `make test-update` == `make test TEST_LOAD_SOURCE=update`.
