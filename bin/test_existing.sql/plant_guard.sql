@@ -13,14 +13,18 @@
  * i.e. the extension was installed without targeting a schema).
  */
 \set ON_ERROR_STOP on
-SELECT :'schema' <> '' AS count_nulls_has_schema
+
+/*
+ * schema_prefix: either empty, or the quoted schema name followed by a
+ * literal '.' - so the view definition below is a single statement with a
+ * plain (unquoted) substitution, rather than branching the whole CREATE
+ * VIEW on whether a schema was given. quote_ident(), not :"schema" -
+ * :schema_prefix is pasted as-is (unquoted substitution), so it must
+ * already be valid, properly-quoted SQL text by the time it lands there.
+ */
+SELECT CASE WHEN :'schema' <> '' THEN quote_ident(:'schema') || '.' ELSE '' END AS schema_prefix
 \gset
 
 CREATE SCHEMA IF NOT EXISTS count_nulls_drop_guard;
-\if :count_nulls_has_schema
 CREATE OR REPLACE VIEW count_nulls_drop_guard.guard AS
-  SELECT :"schema".null_count(NULL::int, NULL::int) AS guarded_member;
-\else
-CREATE OR REPLACE VIEW count_nulls_drop_guard.guard AS
-  SELECT null_count(NULL::int, NULL::int) AS guarded_member;
-\endif
+  SELECT :schema_prefix null_count(NULL::int, NULL::int) AS guarded_member;

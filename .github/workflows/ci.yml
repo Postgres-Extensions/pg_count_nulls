@@ -1,3 +1,40 @@
+# ===========================================================================
+# Test strategy
+#
+# count_nulls can be arrived at several ways, each of which can break
+# differently, so each is exercised by its own job below:
+#
+#   test                   -- FRESH install: CREATE EXTENSION at the current
+#                              version, across every supported PostgreSQL
+#                              major x schema leg (empty/none and Quoted -
+#                              see TEST_SCHEMA in the Makefile).
+#   extension-update-test   -- IN-PLACE update: CREATE EXTENSION at 0.9.6
+#                              (the oldest version we still ship a full
+#                              install script for) then ALTER EXTENSION
+#                              UPDATE (same PostgreSQL, no pg_upgrade), same
+#                              PG x schema matrix as test.
+#   pg-upgrade-test         -- BINARY pg_upgrade: install 0.9.6 on an OLD
+#                              PostgreSQL major, binary-upgrade the cluster
+#                              to a NEWER major, then update the extension to
+#                              current - proves objects created on an old
+#                              server still work when read on a new one. A
+#                              smaller old_pg/new_pg x schema matrix (not the
+#                              full PG matrix - this job is by far the most
+#                              expensive, installing two full PostgreSQL
+#                              majors and running the real pg_upgrade binary
+#                              per leg).
+#
+# All three matrices cross PostgreSQL major with the TEST_SCHEMA axis:
+# without a schema specified at all (empty - CREATE EXTENSION lands wherever
+# the session's own default search_path resolves) and with one explicitly
+# targeted, using a name that requires SQL identifier quoting. Neither leg is
+# redundant with the other - see the Makefile's TEST_SCHEMA comment.
+#
+# `changes` is a cheap gate that lets all three heavy jobs above skip
+# themselves on doc-only pushes, and also derives the shared PostgreSQL-major
+# list those jobs consume from a single set of constants. `all-checks-passed`
+# is the single stable required-status-check name.
+# ===========================================================================
 name: CI
 on: [push, pull_request]
 jobs:
