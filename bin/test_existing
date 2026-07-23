@@ -44,7 +44,7 @@
 # the extension, the suite would test a FRESH install and hide a regression.
 # We plant an object that HARD-references a count_nulls member so a
 # non-CASCADE DROP EXTENSION fails, and actively PROVE that (see
-# bin/test_existing_sql/assert_guard.sql): if the drop unexpectedly succeeds,
+# bin/test_existing.sql/assert_guard.sql): if the drop unexpectedly succeeds,
 # this script fails CI rather than silently passing.
 set -euo pipefail
 
@@ -93,7 +93,7 @@ guard_present() {
 # CREATE EXTENSION (and before any update/upgrade) so it persists through them.
 plant_guard() {
   local db=$1 schema=$2
-  psql -d "$db" -v ON_ERROR_STOP=1 -v schema="$schema" -f bin/test_existing_sql/plant_guard.sql
+  psql -d "$db" -v ON_ERROR_STOP=1 -v schema="$schema" -f bin/test_existing.sql/plant_guard.sql
   assert_drop_blocked "$db"
 }
 
@@ -102,13 +102,13 @@ plant_guard() {
 # unexpectedly succeeds, or if the extension/guard are missing afterward.
 assert_drop_blocked() {
   local db=$1
-  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing_sql/assert_guard.sql
+  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing.sql/assert_guard.sql
   echo "OK: non-CASCADE DROP EXTENSION is blocked in '$db' (dependency guard effective)"
 }
 
 drop_guard() {
   local db=$1
-  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing_sql/drop_guard.sql
+  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing.sql/drop_guard.sql
 }
 
 assert_version() {
