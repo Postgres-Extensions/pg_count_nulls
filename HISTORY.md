@@ -1,5 +1,10 @@
 # count_nulls history
 
+stable
+------
+
+No user-facing changes yet.
+
 1.0.0
 -----
 
