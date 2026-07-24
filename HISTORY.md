@@ -1,7 +1,7 @@
 # count_nulls history
 
-stable
-------
+1.0.0
+-----
 
 == Fix client_min_messages handling in the install script
 CREATE EXTENSION already raises client_min_messages to WARNING for the install
