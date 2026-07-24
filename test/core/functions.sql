@@ -17,7 +17,11 @@
  *    resulting state; doing the same with this file's generated names and
  *    shared ncs() lookup is much less direct. That's the actual reason
  *    count_nulls originally had separate, deliberately-independent smoke
- *    test files (sanity.sql still is one) alongside this shared helper.
+ *    test files alongside this shared helper (sanity.sql was the last one;
+ *    removed once its behavioral coverage turned out to be a strict subset
+ *    of test__functionality's, but the debuggability angle it existed for
+ *    is real and would be worth an intentional replacement, not just an
+ *    absence, if this file's indirection ever becomes a genuine problem).
  */
 
 CREATE SCHEMA _null_count_test;

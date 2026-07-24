@@ -16,12 +16,6 @@
   `test__*` functions of its own (`test__check_ncs`, asserting the extension
   landed where expected; `test__shutdown__drop_all`, asserting it can be
   cleanly dropped), then runs everything via `runtests()`.
-- `sql/sanity.sql` — deliberately does NOT go through `deps.sql`/
-  `core/functions.sql`. A minimal, independent smoke test: `CREATE EXTENSION`
-  (or assert-only, in `existing` mode) plus two direct `null_count()` calls,
-  left in an open transaction. Exists specifically so a failure here is
-  trivially localized (nothing shared to go wrong) - if this fails, the
-  extension itself is broken, not the shared test harness.
 - `build/upgrade.sql` — pgxntool's `test-build` feature: a fast, cheap smoke
   check (install 0.9.6, `ALTER EXTENSION UPDATE`, rolled back) that runs
   automatically before the main suite on every `make test`. Catches a broken
@@ -79,8 +73,7 @@ individually correct) text for `extension_tests`, so there are three files:
 If you add a new scenario that changes this text again (a new TEST_SCHEMA
 value, a new entry point), capture its actual `test/results/<test>.out` (a
 real run, zero raw `^not ok` lines) as the next `_N.out`, don't hand-author
-one. `sanity.out` doesn't vary by scenario (its calls are all unqualified,
-no schema name ever appears in its output), so it has no alternates.
+one.
 
 ## Regenerating expected output
 
