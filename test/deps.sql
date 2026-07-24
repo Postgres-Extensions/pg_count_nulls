@@ -103,8 +103,10 @@ END
 $$;
 \elif :count_nulls_update_mode
 CREATE EXTENSION count_nulls VERSION '0.9.6';
--- Suppress the "already installed, no update" NOTICE class of messages any
--- update script might emit.
+/*
+ * Suppress the "already installed, no update" NOTICE class of messages any
+ * update script might emit.
+ */
 SET client_min_messages = WARNING;
 ALTER EXTENSION count_nulls UPDATE;
 SET client_min_messages = NOTICE;
