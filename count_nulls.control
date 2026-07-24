@@ -1,4 +1,4 @@
 # count_nulls extension
 comment = 'Count the number of null arguments'
-default_version = '1.0.0'
+default_version = 'stable'
 relocatable = false

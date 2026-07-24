@@ -134,3 +134,6 @@ it's worth a direct look before relying on it.
       is always available) for the next cycle. Leaving master stamped at the real
       version means the next source edit regenerates and corrupts the released
       version's install file.
+- [ ] Keep this PR's description small — something like "Reset version back to
+      `stable` after release." is enough. It's a mechanical, low-risk step; it
+      doesn't need the detailed rationale a real content change would.
