@@ -1,5 +1,13 @@
 # count_nulls test suite
 
+This suite is structured differently from most pgTAP-based extension tests:
+rather than each `test/sql/*.sql` file writing its own independent
+assertions, `core/functions.sql` defines a shared library of `test__*`
+functions (pgTAP's `runtests()` naming convention) that test files `\i` and
+then invoke via `runtests()`. See the layout below for how the pieces fit
+together, and the TODO note at the top of `core/functions.sql` for the
+tradeoffs of that choice.
+
 ## Layout
 
 - `deps.sql` — loaded by every test file (via `load.sql` ->
@@ -20,8 +28,6 @@
   check (install 0.9.6, `ALTER EXTENSION UPDATE`, rolled back) that runs
   automatically before the main suite on every `make test`. Catches a broken
   update script immediately, before the heavier CI jobs even start.
-- `expected/*.out` — pg_regress's expected output per test file. See
-  "Why multiple expected-output files per test" below before touching these.
 
 ## The two independent mode switches
 
