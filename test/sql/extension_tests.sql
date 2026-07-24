@@ -26,9 +26,9 @@
  * case into NULL, and runtests() calls every test__* function with no
  * arguments, so it always gets this default.
  */
-CREATE FUNCTION _null_count_test.test__check_ncs
-(schema_hint name DEFAULT NULLIF(:'schema', '')::name)
-RETURNS SETOF text LANGUAGE plpgsql AS $body$
+CREATE FUNCTION _null_count_test.test__check_ncs(
+  schema_hint name DEFAULT NULLIF(:'schema', '')::name
+) RETURNS SETOF text LANGUAGE plpgsql AS $body$
 DECLARE
     /*
      * When TEST_SCHEMA is non-empty we know exactly where the extension
@@ -66,9 +66,9 @@ BEGIN
 END
 $body$;
 
-CREATE FUNCTION _null_count_test.test__shutdown__drop_all
-(schema_hint name DEFAULT NULLIF(:'schema', '')::name)
-RETURNS SETOF text LANGUAGE plpgsql AS $body$
+CREATE FUNCTION _null_count_test.test__shutdown__drop_all(
+  schema_hint name DEFAULT NULLIF(:'schema', '')::name
+) RETURNS SETOF text LANGUAGE plpgsql AS $body$
 BEGIN
     RETURN NEXT lives_ok(
         $$DROP EXTENSION count_nulls$$
