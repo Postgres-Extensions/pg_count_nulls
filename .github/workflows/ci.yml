@@ -32,7 +32,18 @@ jobs:
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
     env:
-      PGTLE_VERSION: "1.5.2"
+      # NOT named PGTLE_VERSION: that collides with pgxntool's own Makefile
+      # variable of the same name (`pgtle:`'s
+      # `$(if $(PGTLE_VERSION),--pgtle-version $(PGTLE_VERSION))`), which Make
+      # auto-imports from the environment. With that name, `make run-pgtle`
+      # silently generates into pg_tle/1.5.2/ (the literal version) instead of
+      # the correct range directory pg_tle/1.5.0+/, then fails when --run
+      # looks for the range directory and doesn't find it. Confirmed
+      # reproducing with a one-line `PGTLE_VERSION=1.5.2 make pgtle`, no CI
+      # needed. Filed as Postgres-Extensions/pgxntool#78 (also affects
+      # cat_tools' own pg-tle-test job, which uses the same env var name, once
+      # it upgrades pgxntool).
+      PG_TLE_BUILD_VERSION: "1.5.2"
     steps:
       # A dedicated cluster, never shared with the other jobs in this
       # workflow: pg_tle requires shared_preload_libraries and mixing
@@ -59,12 +70,12 @@ jobs:
         # of being registered via pg_tle -- not just count_nulls -- without
         # hardcoding contrib/pgtap names.
         run: bin/assert_fs_clean snapshot ${{ matrix.pg }} /tmp/control_baseline.txt
-      - name: Build and install pg_tle ${{ env.PGTLE_VERSION }}
+      - name: Build and install pg_tle ${{ env.PG_TLE_BUILD_VERSION }}
         # flex/bison/libkrb5-dev aren't in the pgxn-tools image; pg_tle's build
         # needs them (guc-file.l, and clientauth.c includes gssapi.h).
         run: |
           apt-get install -y flex bison libkrb5-dev
-          git clone --branch v${{ env.PGTLE_VERSION }} --depth 1 https://github.com/aws/pg_tle.git /tmp/pg_tle
+          git clone --branch v${{ env.PG_TLE_BUILD_VERSION }} --depth 1 https://github.com/aws/pg_tle.git /tmp/pg_tle
           make -C /tmp/pg_tle install
       - name: Enable pg_tle and restart PostgreSQL ${{ matrix.pg }}
         run: |
