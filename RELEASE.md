@@ -111,14 +111,14 @@ it's worth a direct look before relying on it.
       "Untracked changes!" on a dirty tree.
 - [ ] `make tag` — creates a git tag named exactly the DISTRIBUTION version,
       UNPREFIXED (e.g. `1.0.0`, no `v` prefix), taken from `PGXNVERSION`, and pushes
-      it to `origin`. **Make sure `origin` in your checkout actually points at the
-      real upstream repo, not a personal fork.** If this project has used a
-      different release-tracking scheme before (release branches, no tracking at
-      all, etc.), `make tag` is the sole mechanism going forward once migrated. It's
-      idempotent when the tag already points at HEAD, and errors if the tag exists
-      on a different commit. To move an existing tag use `make forcetag`
-      (= `make rmtag` then `make tag`); `make rmtag` deletes the tag locally and on
-      `origin`.
+      it to `upstream` (this project's `Makefile` sets `PGXN_REMOTE = upstream`,
+      since `origin` here is the `jnasbyupgrade` fork, not the canonical repo — see
+      pgxntool#53). If this project has used a different release-tracking scheme
+      before (release branches, no tracking at all, etc.), `make tag` is the sole
+      mechanism going forward once migrated. It's idempotent when the tag already
+      points at HEAD, and errors if the tag exists on a different commit. To move
+      an existing tag use `make forcetag` (= `make rmtag` then `make tag`);
+      `make rmtag` deletes the tag locally and on `upstream`.
 - [ ] `make dist` — depends on `tag` (and builds the HTML docs), then
       `git archive`s the tag into a distribution zip in the parent directory.
       Because it archives the tag, only committed files are included. If a

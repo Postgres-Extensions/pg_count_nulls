@@ -1,5 +1,10 @@
 include pgxntool/base.mk
 
+# origin is the jnasbyupgrade fork, not the canonical repo -- point tag/dist
+# at the real remote explicitly instead of relying on whoever runs `make tag`
+# to remember (see pgxntool#53).
+PGXN_REMOTE = upstream
+
 # Temporary hack
 testdeps: $(wildcard test/*/*.sql) $(wildcard test/*.sql) # Be careful not to include directories in this
 
