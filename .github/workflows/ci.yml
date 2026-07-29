@@ -113,7 +113,13 @@ jobs:
       - name: Verify count_nulls works when deployed via pg_tle
         run: |
           INSTALLED=$(psql -d count_nulls_smoke -tAc "SELECT extversion FROM pg_extension WHERE extname = 'count_nulls'")
-          EXPECTED=$(make -s print-PGXNVERSION 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p')
+          # EXTENSION_count_nulls_VERSION (the .control file's default_version),
+          # NOT PGXNVERSION (the PGXN distribution version, from META.in.json)
+          # -- a version-less CREATE EXTENSION installs whatever the control
+          # file's default_version says, and count_nulls' is currently the
+          # 'stable' pseudo-version, not the last real release. See
+          # RELEASE.md's note on distribution vs. extension versions.
+          EXPECTED=$(make -s print-EXTENSION_count_nulls_VERSION 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p')
           echo "installed=$INSTALLED expected=$EXPECTED"
           if [ -z "$INSTALLED" ] || [ -z "$EXPECTED" ] || [ "$INSTALLED" != "$EXPECTED" ]; then
             echo "FAIL: installed='$INSTALLED' expected='$EXPECTED'"; exit 1
