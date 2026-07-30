@@ -7,13 +7,17 @@ name: Claude Code Review
 # steal secrets before this ever runs.
 #
 # SECURITY: pull_request_target runs in the BASE repo with secrets and a
-# write-capable token. The job is gated to PRs whose head branch lives in THIS
-# repo (not an external fork) — that requires push access to this repo in the
-# first place, so an arbitrary external fork can never trigger this
-# secret-bearing job. The workflow file always comes from the base branch
-# (master), so a PR cannot modify the reviewer that runs on it. We check out
-# the PR head only for read context (persist-credentials: false) and never
-# build or execute PR code.
+# write-capable token. The job is gated to PRs authored by jnasbyupgrade only
+# — CLAUDE_CODE_OAUTH_TOKEN is tied to their personal Claude account, and this
+# repo has other collaborators (e.g. decibel) whose PRs shouldn't burn it.
+# github.event.pull_request.user.login is the PR's original author and can't
+# be spoofed by PR content, so this check holds regardless of whether the PR
+# head lives in this repo or an external fork (an arbitrary external fork
+# still can't trigger this secret-bearing job unless it's actually
+# jnasbyupgrade's own fork). The workflow file always comes from the base
+# branch (master), so a PR cannot modify the reviewer that runs on it. We
+# check out the PR head only for read context (persist-credentials: false)
+# and never build or execute PR code.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -24,11 +28,11 @@ concurrency:
 
 jobs:
   claude-review:
-    # Same-repo PRs only (never an external fork), and skip drafts (don't
-    # spend API/CI on unfinished PRs).
+    # jnasbyupgrade's own PRs only, and skip drafts (don't spend API/CI on
+    # unfinished PRs).
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.user.login == 'jnasbyupgrade'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

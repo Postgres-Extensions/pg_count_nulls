@@ -14,11 +14,18 @@ on:
 # serializing would only delay responses and cancelling would drop them.
 jobs:
   claude:
+    # jnasbyupgrade only: CLAUDE_CODE_OAUTH_TOKEN is tied to their personal
+    # Claude account, and this repo has other collaborators (e.g. decibel) —
+    # without this, anyone commenting/reviewing/opening an issue with
+    # "@claude" would burn it. github.actor is who triggered the event
+    # (commenter/reviewer/issue-opener), not who owns the PR/issue it's on.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      github.actor == 'jnasbyupgrade' && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
