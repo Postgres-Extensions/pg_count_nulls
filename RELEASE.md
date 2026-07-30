@@ -107,18 +107,26 @@ it's worth a direct look before relying on it.
       committed files only.)
 
 ## 6. Tag and distribute
+
+> **⚠️ Pass `PGXN_REMOTE=upstream` to every target below if your clone's `origin`
+> is a personal fork** (as it typically is for a maintainer working from a fork
+> with the canonical repo configured as a separate `upstream` remote). Without
+> it, `tag`/`rmtag`/`forcetag`/`dist` push to `origin` by default — silently
+> tagging the fork instead of `Postgres-Extensions/pg_count_nulls`. pgxntool
+> 2.2.0 added `PGXN_REMOTE` specifically to fix this
+> (https://github.com/Postgres-Extensions/pgxntool/issues/53).
+
 - [ ] Commit the release changes; working tree must be clean — `make tag` aborts with
       "Untracked changes!" on a dirty tree.
 - [ ] `make tag` — creates a git tag named exactly the DISTRIBUTION version,
       UNPREFIXED (e.g. `1.0.0`, no `v` prefix), taken from `PGXNVERSION`, and pushes
-      it to `origin`. **Make sure `origin` in your checkout actually points at the
-      real upstream repo, not a personal fork.** If this project has used a
+      it to `$(PGXN_REMOTE)` (default `origin`). If this project has used a
       different release-tracking scheme before (release branches, no tracking at
       all, etc.), `make tag` is the sole mechanism going forward once migrated. It's
       idempotent when the tag already points at HEAD, and errors if the tag exists
       on a different commit. To move an existing tag use `make forcetag`
       (= `make rmtag` then `make tag`); `make rmtag` deletes the tag locally and on
-      `origin`.
+      `$(PGXN_REMOTE)`.
 - [ ] `make dist` — depends on `tag` (and builds the HTML docs), then
       `git archive`s the tag into a distribution zip in the parent directory.
       Because it archives the tag, only committed files are included. If a
