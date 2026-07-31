@@ -1,8 +1,6 @@
 -- Add any test dependency statements here
--- IF NOT EXISTS will emit NOTICEs, which is annoying
-SET client_min_messages = WARNING;
-CREATE SCHEMA IF NOT EXISTS :schema;
-SET search_path = :schema;
-SET client_min_messages = NOTICE;
-
-CREATE EXTENSION count_nulls;
+--
+-- count_nulls itself is no longer installed here: test/install/load.sql
+-- installs it once, committed, before any test/sql/*.sql file runs (see
+-- pgxntool/README.asc's "test/install" section) - so it's already present
+-- by the time this per-test (rolled-back) file loads.

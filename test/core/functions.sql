@@ -219,6 +219,12 @@ BEGIN
 END
 $body$;
 
-SET SEARCH_PATH = _null_count_test, tap, :schema;
+/*
+ * No explicit target schema to restore in phase 1 (count_nulls installs
+ * with no schema targeting at all - see test/install/load.sql), so this
+ * just re-states the same search_path already set at the top of this file.
+ * A later schema-targeting phase may need this to do more.
+ */
+SET SEARCH_PATH = _null_count_test, tap;
 
 -- vi: expandtab sw=2 ts=2

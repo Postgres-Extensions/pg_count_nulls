@@ -1,27 +1,25 @@
 \set ECHO none
 
-\set schema schema_to_load_count_nulls
 \i test/load.sql
 
-\set schema public
 \i test/core/functions.sql
 
---CREATE OR REPLACE FUNCTION ncs() RETURNS name LANGUAGE sql IMMUTABLE AS $$SELECT 'schema_to_load_count_nulls'::name$$;
-
+/*
+ * count_nulls is installed by test/install/load.sql with no schema
+ * targeting - it lands wherever the session's own search_path resolves at
+ * CREATE EXTENSION time (in-suite, that's pgTap's own schema, put on
+ * search_path first by test/pgxntool/tap_setup.sql). This just proves
+ * ncs() actually resolves to something real; a future TEST_SCHEMA switch
+ * (see pgxntool/README.asc's U&U section) would let this assert an exact,
+ * known location instead.
+ */
 CREATE FUNCTION _null_count_test.test__check_ncs
 () RETURNS SETOF text LANGUAGE plpgsql AS $body$
-DECLARE
-    s CONSTANT name = 'schema_to_load_count_nulls';
 BEGIN
-    RETURN NEXT is(
+    RETURN NEXT isnt(
         ncs()
-        , s
-    );
-    RETURN NEXT is(
-        current_schemas(true) @> array[s]
-        , false
-        --, format('schema %I should not be in search path (%s)', s, current_schemas(true))
-        , format('schema %I should not be in search path', s) --, current_schemas(true))
+        , NULL
+        , 'ncs() resolves to the schema count_nulls actually installed in'
     );
 END
 $body$;
@@ -31,10 +29,6 @@ CREATE FUNCTION _null_count_test.test__shutdown__drop_all
 BEGIN
     RETURN NEXT lives_ok(
         $$DROP EXTENSION count_nulls$$
-    );
-
-    RETURN NEXT lives_ok(
-        $$DROP SCHEMA schema_to_load_count_nulls$$
     );
 END
 $body$;
