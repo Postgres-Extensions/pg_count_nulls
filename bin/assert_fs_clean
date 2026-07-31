@@ -23,11 +23,14 @@
 #       whatever ships on disk by default (e.g. contrib) is excluded
 #       automatically -- no hardcoded exclude list to keep in sync.
 #
-#   verify PG_MAJOR BASELINE_FILE
-#       Fail if any *.control file exists now that wasn't in BASELINE_FILE,
-#       other than pg_tle.control itself (the one legitimate filesystem install
-#       in this flow). Run this after EVERY step that could plausibly have
-#       written extension files to disk.
+#   verify PG_MAJOR BASELINE_FILE ALLOWED_NEW_FILE
+#       Fail unless ALLOWED_NEW_FILE (a bare filename, e.g. pg_tle.control)
+#       exists in the extension directory AND it's the only *.control file
+#       that wasn't already in BASELINE_FILE. Run this after EVERY step that
+#       could plausibly have written extension files to disk -- including the
+#       one step that's expected to write ALLOWED_NEW_FILE itself, so a
+#       snapshot/verify pair also proves that step did what it was supposed to
+#       (not just that nothing else happened).
 set -euo pipefail
 
 extdir_of() { echo "/usr/share/postgresql/$1/extension"; }
@@ -38,23 +41,30 @@ snapshot() {
 }
 
 verify() {
-  local pg_major=$1 baseline=$2 after new
+  local pg_major=$1 baseline=$2 allowed=$3 extdir expected after new
+  extdir=$(extdir_of "$pg_major")
+  expected="$extdir/$allowed"
   after=$(mktemp)
-  find "$(extdir_of "$pg_major")" -maxdepth 1 -name '*.control' | sort > "$after"
-  new=$(comm -13 "$baseline" "$after" | grep -vx '.*/pg_tle\.control' || true)
+  find "$extdir" -maxdepth 1 -name '*.control' | sort > "$after"
+  if ! grep -qFx "$expected" "$after"; then
+    rm -f "$after"
+    echo "FAIL: expected $expected to exist, but it doesn't" >&2
+    exit 1
+  fi
+  new=$(comm -13 "$baseline" "$after" | grep -vFx "$expected" || true)
   rm -f "$after"
   if [ -n "$new" ]; then
-    echo "FAIL: unexpected extension control file(s) on disk (everything but pg_tle must be registered via pg_tle, not filesystem-installed):" >&2
+    echo "FAIL: unexpected extension control file(s) on disk (only $allowed is expected to be new):" >&2
     echo "$new" >&2
     exit 1
   fi
-  echo "OK: no stray extension control files on disk (PG $pg_major)"
+  echo "OK: only $allowed is new; no stray extension control files on disk (PG $pg_major)"
 }
 
 usage() {
   echo "usage: bin/assert_fs_clean <subcommand> [args]" >&2
   echo "  snapshot PG_MAJOR BASELINE_FILE" >&2
-  echo "  verify PG_MAJOR BASELINE_FILE" >&2
+  echo "  verify PG_MAJOR BASELINE_FILE ALLOWED_NEW_FILE" >&2
   exit 2
 }
 

@@ -54,20 +54,27 @@ jobs:
         uses: actions/checkout@v4
       - name: Install rsync
         run: apt-get install -y rsync
+      - name: Snapshot filesystem extension control files (pre-pgtap baseline)
+        # Whatever ships on disk by default (e.g. contrib), before installing
+        # pgTAP. Lets the next step prove pgTAP is the ONLY thing `make pgtap`
+        # puts on disk, instead of trusting that and folding whatever it did
+        # into the pre-pg_tle baseline unexamined -- a future pgxntool change
+        # to `make pgtap` that also happened to touch count_nulls' own files
+        # would otherwise be silently absorbed into that baseline and never
+        # get flagged by any later check.
+        run: bin/assert_fs_clean snapshot ${{ matrix.pg }} /tmp/pre_pgtap_baseline.txt
       - name: Install pgtap (test harness dependency)
         # pgTAP is a filesystem-installed dependency of the TEST HARNESS, not
         # part of what this job proves is pg_tle-only -- it's not being
-        # deployed via pg_tle here, and never will be. Installing it
-        # explicitly here, before the baseline snapshot, makes it part of the
-        # accepted starting state -- like any other extension already on
-        # disk -- instead of needing a hardcoded exclude-by-name rule that
-        # would erode the whole point of diffing against a baseline.
+        # deployed via pg_tle here, and never will be.
         run: make pgtap
+      - name: Verify make pgtap installed exactly pgtap.control, nothing else
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/pre_pgtap_baseline.txt pgtap.control
       - name: Snapshot filesystem extension control files (pre-pg_tle baseline)
-        # Whatever ships on disk by default (e.g. contrib, and now pgtap)
-        # before we install pg_tle. bin/assert_fs_clean's later checks diff
-        # against this, so they flag ANY extension that lands on disk instead
-        # of being registered via pg_tle -- not just count_nulls -- without
+        # Everything on disk now that pgtap is confirmed the only addition
+        # (contrib, pgtap). bin/assert_fs_clean's later checks diff against
+        # this, so they flag ANY extension that lands on disk instead of
+        # being registered via pg_tle -- not just count_nulls -- without
         # hardcoding contrib/pgtap names.
         run: bin/assert_fs_clean snapshot ${{ matrix.pg }} /tmp/control_baseline.txt
       - name: Build and install pg_tle ${{ env.PG_TLE_BUILD_VERSION }}
@@ -98,7 +105,7 @@ jobs:
         # make this whole job a false pass without ever raising an error. Run
         # again after every step below that could plausibly write extension
         # files to disk -- never trust a single check to catch everything.
-        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
       - name: Install count_nulls purely via pg_tle (fresh install, no filesystem trace)
         # count_nulls is never `make install`ed in this job, so a successful
         # CREATE EXTENSION here can only be resolving through pg_tle's
@@ -130,4 +137,4 @@ jobs:
             echo "FAIL: expected null_count(1, NULL, 2) = 1, got '$RESULT'"; exit 1
           fi
       - name: Verify no stray extension control files after the fresh-install smoke test
-        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
