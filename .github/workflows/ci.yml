@@ -19,3 +19,122 @@ jobs:
         uses: actions/checkout@v4
       - name: Test on PostgreSQL ${{ matrix.pg }}
         run: pg-build-test
+
+  pg-tle-test:
+    strategy:
+      matrix:
+        # Intersection of count_nulls' own supported range (10-18, see the
+        # `test` job above / #21) with pg_tle 1.5.2's supported range (12-18,
+        # see pgxntool/pgtle_versions.md): drop 10 and 11 since pg_tle doesn't
+        # support them.
+        pg: [18, 17, 16, 15, 14, 13, 12]
+    name: 🧩 pg_tle ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    env:
+      # NOT named PGTLE_VERSION: that collides with pgxntool's own Makefile
+      # variable of the same name (`pgtle:`'s
+      # `$(if $(PGTLE_VERSION),--pgtle-version $(PGTLE_VERSION))`), which Make
+      # auto-imports from the environment. With that name, `make run-pgtle`
+      # silently generates into pg_tle/1.5.2/ (the literal version) instead of
+      # the correct range directory pg_tle/1.5.0+/, then fails when --run
+      # looks for the range directory and doesn't find it. Confirmed
+      # reproducing with a one-line `PGTLE_VERSION=1.5.2 make pgtle`, no CI
+      # needed. Filed as Postgres-Extensions/pgxntool#78 (also affects
+      # cat_tools' own pg-tle-test job, which uses the same env var name, once
+      # it upgrades pgxntool).
+      PG_TLE_BUILD_VERSION: "1.5.2"
+    steps:
+      # A dedicated cluster, never shared with the other jobs in this
+      # workflow: pg_tle requires shared_preload_libraries and mixing
+      # pg_tle/non-pg_tle extension installs on one cluster can misbehave.
+      - name: Start PostgreSQL ${{ matrix.pg }}
+        run: pg-start ${{ matrix.pg }}
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Install rsync
+        run: apt-get install -y rsync
+      - name: Snapshot filesystem extension control files (pre-pgtap baseline)
+        # Whatever ships on disk by default (e.g. contrib), before installing
+        # pgTAP. Lets the next step prove pgTAP is the ONLY thing `make pgtap`
+        # puts on disk, instead of trusting that and folding whatever it did
+        # into the pre-pg_tle baseline unexamined -- a future pgxntool change
+        # to `make pgtap` that also happened to touch count_nulls' own files
+        # would otherwise be silently absorbed into that baseline and never
+        # get flagged by any later check.
+        run: bin/assert_fs_clean snapshot ${{ matrix.pg }} /tmp/pre_pgtap_baseline.txt
+      - name: Install pgtap (test harness dependency)
+        # pgTAP is a filesystem-installed dependency of the TEST HARNESS, not
+        # part of what this job proves is pg_tle-only -- it's not being
+        # deployed via pg_tle here, and never will be.
+        run: make pgtap
+      - name: Verify make pgtap installed exactly pgtap.control, nothing else
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/pre_pgtap_baseline.txt pgtap.control
+      - name: Snapshot filesystem extension control files (pre-pg_tle baseline)
+        # Everything on disk now that pgtap is confirmed the only addition
+        # (contrib, pgtap). bin/assert_fs_clean's later checks diff against
+        # this, so they flag ANY extension that lands on disk instead of
+        # being registered via pg_tle -- not just count_nulls -- without
+        # hardcoding contrib/pgtap names.
+        run: bin/assert_fs_clean snapshot ${{ matrix.pg }} /tmp/control_baseline.txt
+      - name: Build and install pg_tle ${{ env.PG_TLE_BUILD_VERSION }}
+        # flex/bison/libkrb5-dev aren't in the pgxn-tools image; pg_tle's build
+        # needs them (guc-file.l, and clientauth.c includes gssapi.h).
+        run: |
+          apt-get install -y flex bison libkrb5-dev
+          git clone --branch v${{ env.PG_TLE_BUILD_VERSION }} --depth 1 https://github.com/aws/pg_tle.git /tmp/pg_tle
+          make -C /tmp/pg_tle install
+      - name: Enable pg_tle and restart PostgreSQL ${{ matrix.pg }}
+        run: |
+          echo "shared_preload_libraries = 'pg_tle'" >> /etc/postgresql/${{ matrix.pg }}/test/postgresql.conf
+          pg_ctlcluster ${{ matrix.pg }} test restart
+          pg_isready -t 30
+      - name: Register pg_tle + count_nulls against template1
+        # template1, not the ambient default db: pg_tle's registration catalog
+        # is per-database, and `createdb` only inherits it because it copies
+        # template1 by default. Every count_nulls database used below (the
+        # smoke-test db) is created AFTER this step specifically so it
+        # inherits both registrations.
+        run: |
+          psql -d template1 -c "CREATE EXTENSION pg_tle"
+          PGDATABASE=template1 make run-pgtle
+      - name: Verify no stray extension control files landed on the filesystem
+        # CRITICAL, and intentionally redundant with the count_nulls-specific
+        # check in the next step: a filesystem control file silently wins
+        # over a pg_tle-registered extension of the same name, which would
+        # make this whole job a false pass without ever raising an error. Run
+        # again after every step below that could plausibly write extension
+        # files to disk -- never trust a single check to catch everything.
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Install count_nulls purely via pg_tle (fresh install, no filesystem trace)
+        # count_nulls is never `make install`ed in this job, so a successful
+        # CREATE EXTENSION here can only be resolving through pg_tle's
+        # registration, not a control file on disk. Checked explicitly here
+        # too (not just via the comprehensive check above) as a guard
+        # specifically for the extension under test, in case that check's
+        # exclude-list logic has a bug.
+        run: |
+          test ! -e /usr/share/postgresql/${{ matrix.pg }}/extension/count_nulls.control
+          createdb count_nulls_smoke
+          psql -d count_nulls_smoke -c "CREATE EXTENSION count_nulls"
+      - name: Verify count_nulls works when deployed via pg_tle
+        run: |
+          INSTALLED=$(psql -d count_nulls_smoke -tAc "SELECT extversion FROM pg_extension WHERE extname = 'count_nulls'")
+          # EXTENSION_count_nulls_VERSION (the .control file's default_version),
+          # NOT PGXNVERSION (the PGXN distribution version, from META.in.json)
+          # -- a version-less CREATE EXTENSION installs whatever the control
+          # file's default_version says, and count_nulls' is currently the
+          # 'stable' pseudo-version, not the last real release. See
+          # RELEASE.md's note on distribution vs. extension versions.
+          EXPECTED=$(make -s print-EXTENSION_count_nulls_VERSION 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p')
+          echo "installed=$INSTALLED expected=$EXPECTED"
+          if [ -z "$INSTALLED" ] || [ -z "$EXPECTED" ] || [ "$INSTALLED" != "$EXPECTED" ]; then
+            echo "FAIL: installed='$INSTALLED' expected='$EXPECTED'"; exit 1
+          fi
+          RESULT=$(psql -d count_nulls_smoke -v ON_ERROR_STOP=1 -tAc "SELECT null_count(1, NULL, 2)")
+          echo "null_count(1, NULL, 2)=$RESULT"
+          if [ "$RESULT" != "1" ]; then
+            echo "FAIL: expected null_count(1, NULL, 2) = 1, got '$RESULT'"; exit 1
+          fi
+      - name: Verify no stray extension control files after the fresh-install smoke test
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control

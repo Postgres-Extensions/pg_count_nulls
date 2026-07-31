@@ -1,16 +1,23 @@
 name: Claude Code Review
 
 # Runs on PRs INTO this repo. We use pull_request_target (not pull_request) so
-# that PRs from a fork can access CLAUDE_CODE_OAUTH_TOKEN — GitHub withholds
-# secrets from `pull_request` runs triggered by forks, which is why the plain
-# `pull_request` version never worked for fork PRs.
+# that the workflow definition always comes from the base branch, never from
+# the PR's own head - a plain `pull_request` run uses whatever workflow file
+# is on the PR branch itself, which a same-repo feature branch could modify to
+# steal secrets before this ever runs.
 #
 # SECURITY: pull_request_target runs in the BASE repo with secrets and a
-# write-capable token. The job is gated to PRs from the trusted `jnasbyupgrade`
-# fork only — an arbitrary external fork can never trigger this secret-bearing
-# job. The workflow file always comes from the base branch (master), so a PR
-# cannot modify the reviewer that runs on it. We check out the PR head only for
-# read context (persist-credentials: false) and never build or execute PR code.
+# write-capable token. The job is gated to PRs authored by jnasbyupgrade only
+# — CLAUDE_CODE_OAUTH_TOKEN is tied to their personal Claude account, and this
+# repo has other collaborators (e.g. decibel) whose PRs shouldn't burn it.
+# github.event.pull_request.user.login is the PR's original author and can't
+# be spoofed by PR content, so this check holds regardless of whether the PR
+# head lives in this repo or an external fork (an arbitrary external fork
+# still can't trigger this secret-bearing job unless it's actually
+# jnasbyupgrade's own fork). The workflow file always comes from the base
+# branch (master), so a PR cannot modify the reviewer that runs on it. We
+# check out the PR head only for read context (persist-credentials: false)
+# and never build or execute PR code.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -21,11 +28,11 @@ concurrency:
 
 jobs:
   claude-review:
-    # Trusted fork only, and skip drafts (don't spend API/CI on unfinished PRs).
-    # To add more trusted owners, extend the head-owner check.
+    # jnasbyupgrade's own PRs only, and skip drafts (don't spend API/CI on
+    # unfinished PRs).
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.owner.login == 'jnasbyupgrade'
+      github.event.pull_request.user.login == 'jnasbyupgrade'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
