@@ -32,17 +32,18 @@ jobs:
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
     env:
-      # NOT named PGTLE_VERSION: that collides with pgxntool's own Makefile
-      # variable of the same name (`pgtle:`'s
+      # NOT named PGTLE_VERSION: on the pgxntool version this job was
+      # written against, that collided with pgxntool's own Makefile variable
+      # of the same name (`pgtle:`'s
       # `$(if $(PGTLE_VERSION),--pgtle-version $(PGTLE_VERSION))`), which Make
-      # auto-imports from the environment. With that name, `make run-pgtle`
-      # silently generates into pg_tle/1.5.2/ (the literal version) instead of
-      # the correct range directory pg_tle/1.5.0+/, then fails when --run
-      # looks for the range directory and doesn't find it. Confirmed
-      # reproducing with a one-line `PGTLE_VERSION=1.5.2 make pgtle`, no CI
-      # needed. Filed as Postgres-Extensions/pgxntool#78 (also affects
-      # cat_tools' own pg-tle-test job, which uses the same env var name, once
-      # it upgrades pgxntool).
+      # auto-imports from the environment - `make run-pgtle` would silently
+      # generate into pg_tle/1.5.2/ (the literal version) instead of the
+      # correct range directory pg_tle/1.5.0+/, then fail when --run looked
+      # for the range directory and didn't find it. Filed as
+      # Postgres-Extensions/pgxntool#78, fixed upstream in pgxntool 2.3.0
+      # (renamed to PGXNTOOL_PGTLE_VERSION - see this repo's pgxntool bump).
+      # Keeping our own name distinct from EITHER of those regardless -
+      # still the simplest way to guarantee no future collision.
       PG_TLE_BUILD_VERSION: "1.5.2"
     steps:
       # A dedicated cluster, never shared with the other jobs in this
