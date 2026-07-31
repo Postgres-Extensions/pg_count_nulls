@@ -23,11 +23,11 @@ jobs:
   pg-tle-test:
     strategy:
       matrix:
-        # Intersection of count_nulls' own supported range (10-17, see the
-        # `test` job above) with pg_tle 1.5.2's supported range (12-18, see
-        # pgxntool/pgtle_versions.md): drop 10 and 11 since pg_tle doesn't
+        # Intersection of count_nulls' own supported range (10-18, see the
+        # `test` job above / #21) with pg_tle 1.5.2's supported range (12-18,
+        # see pgxntool/pgtle_versions.md): drop 10 and 11 since pg_tle doesn't
         # support them.
-        pg: [17, 16, 15, 14, 13, 12]
+        pg: [18, 17, 16, 15, 14, 13, 12]
     name: 🧩 pg_tle ${{ matrix.pg }}
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
