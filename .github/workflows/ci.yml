@@ -1,3 +1,34 @@
+# ===========================================================================
+# Test strategy
+#
+# count_nulls can be arrived at several ways, each of which can break
+# differently, so each is exercised by its own job below:
+#
+#   test                   -- FRESH install: CREATE EXTENSION at the current
+#                              version, across every supported PostgreSQL
+#                              major.
+#   extension-update-test   -- IN-PLACE update: CREATE EXTENSION at 0.9.6
+#                              then ALTER EXTENSION UPDATE (same PostgreSQL,
+#                              no pg_upgrade), same PG matrix as test.
+#   pg-tle-test             -- pg_tle DEPLOYMENT: fresh install registered
+#                              through AWS pg_tle's database-backed catalog
+#                              instead of a filesystem .control file.
+#
+# Every TEST_SCHEMA value (empty - no schema targeting at all - and
+# 'Quoted', a name requiring SQL identifier quoting) is exercised too, via
+# `make test-schema-all`'s in-Makefile loop rather than a CI matrix
+# dimension - a schema name is just an input the same assertions run
+# against, not a real environment difference, so crossing it into the
+# matrix would only multiply job count for no added confidence (see the
+# Makefile's TEST_SCHEMA_VALUES comment). Every leg passes against the SAME
+# test/expected/extension_tests.out (see test/README.md for how the suite
+# keeps its output schema-invariant).
+#
+# `changes` is a cheap gate that lets the heavy jobs above skip themselves on
+# doc-only pushes, and also derives the shared PostgreSQL-major list those
+# jobs consume from a single set of constants. `all-checks-passed` is the
+# single stable required-status-check name.
+# ===========================================================================
 name: CI
 on:
   push:
@@ -5,6 +36,115 @@ on:
       - master
   pull_request:
 jobs:
+  # Cheap gate that lets the heavy jobs below skip themselves on commits that
+  # touch only docs. Must run on every push/pull_request (no paths-ignore on
+  # the workflow itself), otherwise the required all-checks-passed check
+  # would never report on doc-only pushes and get stuck Pending in branch
+  # protection.
+  #
+  # Also derives, from a SINGLE set of constants, the supported-PostgreSQL-
+  # major list the test / extension-update-test jobs consume: every job that
+  # cares which majors are supported reads the SAME list, so they can't
+  # silently drift onto different sets, and adding a new major is a one-line
+  # change here instead of an edit in several jobs.
+  changes:
+    name: 🔍 Detect docs-only changes & derive PG matrix
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+      supported_pg: ${{ steps.pg.outputs.supported_pg }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          # Full history needed so BASE and HEAD below are both reachable
+          # for `git diff`.
+          fetch-depth: 0
+      - name: Compute per-push changed files
+        id: diff
+        run: |
+          # Fail safe to running the full matrix: default docs_only to false
+          # immediately, before anything below has a chance to compute or
+          # fail. Writing the same GITHUB_OUTPUT key twice is fine (the last
+          # write wins), so the only way this step ends with docs_only=true
+          # is by genuinely proving it further down - never by skipping past
+          # an edge case with a default.
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.event.action }}" = "synchronize" ] && \
+             [ -n "${{ github.event.before }}" ]; then
+            # A push to an already-open PR: before/after give the true
+            # per-push diff, same as for a branch push.
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.event.after }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            # First run for this PR (opened/reopened/etc, or synchronize
+            # without a usable before): fall back to the whole base...head
+            # diff.
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.event.after }}"
+          fi
+
+          echo "base=$BASE"
+          echo "head=$HEAD"
+
+          # A missing HEAD, or an all-zeros BASE (e.g. a new branch's first
+          # push, where GitHub reports no prior commit), means we can't
+          # compute a real diff. docs_only is already false from above;
+          # just stop here rather than risk skipping tests.
+          if [ -z "$HEAD" ] || [ -z "$BASE" ] || [[ "$BASE" =~ ^0+$ ]]; then
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" || echo __DIFF_FAILED__)
+
+          DOCS_ONLY=true
+          if [ "$CHANGED" = "__DIFF_FAILED__" ] || [ -z "$CHANGED" ]; then
+            DOCS_ONLY=false
+          else
+            while IFS= read -r f; do
+              if ! [[ "$f" =~ \.(md|asc)$ ]]; then
+                DOCS_ONLY=false
+                break
+              fi
+            done <<< "$CHANGED"
+          fi
+
+          echo "changed files:"
+          echo "$CHANGED"
+          echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+
+      - name: Derive the supported-PostgreSQL-major list
+        id: pg
+        run: |
+          # A dozen-odd lines to replace what looks like a handful of version
+          # references, but it buys CONSISTENCY: both the fresh-install
+          # `test` matrix and the `extension-update-test` matrix derive their
+          # PostgreSQL set from this ONE source, so they cannot silently
+          # drift onto different lists. Adding a new major is a one-line
+          # NEWEST bump here, not an edit in N places.
+          #
+          # Only one floor is needed here: 0.9.6 (the oldest version
+          # count_nulls still ships a full install script for) is pure SQL
+          # over anyarray/json/jsonb with no catalog-version sensitivity, so
+          # it installs on every PostgreSQL major count_nulls supports -
+          # there's no separate legacy-only floor to carve out.
+          NEWEST=18
+          FLOOR=10
+
+          supported=$(seq "$NEWEST" -1 "$FLOOR")
+
+          # Emit a JSON array from a list of ints, for the job matrices to
+          # consume with fromJSON (GitHub evaluates a literal dollar-brace
+          # expression even inside a run block, so none is written here).
+          json() { printf '%s\n' "$@" | paste -sd, - | sed 's/^/[/; s/$/]/'; }
+
+          echo "supported_pg=$(json $supported)" >> "$GITHUB_OUTPUT"
+
   lint:
     name: 🧹 SQL lint
     runs-on: ubuntu-latest
@@ -17,20 +157,15 @@ jobs:
         # is what actually proves that works from a plain clone.
         run: make lint
 
-  # Fresh install, across the PG matrix. Every TEST_SCHEMA value (empty -
-  # no schema targeting at all - and 'Quoted', a name requiring SQL
-  # identifier quoting) is exercised too, via `make test-schema-all`'s
-  # in-Makefile loop rather than a CI matrix dimension - a schema name is
-  # just an input the same assertions run against, not a real environment
-  # difference, so crossing it into the matrix would only multiply job
-  # count for no added confidence (see the Makefile's TEST_SCHEMA_VALUES
-  # comment). Both legs pass against the SAME
-  # test/expected/extension_tests.out (see test/README.md for how the
-  # suite keeps its output schema-invariant).
+  # Fresh install, across the PG matrix. See the top-of-file note on why
+  # TEST_SCHEMA is a make-level loop here, not a second matrix dimension.
   test:
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
     strategy:
       matrix:
-        pg: [18, 17, 16, 15, 14, 13, 12, 11, 10]
+        # From the single source in the changes job.
+        pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
     name: 🐘 PostgreSQL ${{ matrix.pg }}
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
@@ -53,9 +188,12 @@ jobs:
   # (pg-upgrade-test), the update itself is just SQL, so test/install can
   # do the whole thing inside one pg_regress invocation.
   extension-update-test:
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
     strategy:
       matrix:
-        pg: [18, 17, 16, 15, 14, 13, 12, 11, 10]
+        # From the single source in the changes job.
+        pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
     name: ⬆️ Extension update test on PostgreSQL ${{ matrix.pg }}
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
@@ -70,6 +208,8 @@ jobs:
         run: make verify-results TEST_LOAD_SOURCE=update
 
   pg-tle-test:
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
     strategy:
       matrix:
         # Intersection of count_nulls' own supported range (10-18, see the
@@ -188,3 +328,43 @@ jobs:
           fi
       - name: Verify no stray extension control files after the fresh-install smoke test
         run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+
+  # A single stable check name for use as a required status check in branch
+  # protection rules. Matrix jobs produce check names like
+  # "🐘 PostgreSQL 14 (schema none)" which would all need to be listed
+  # individually and updated whenever the matrix changes. This job passes if
+  # all others passed or were skipped (e.g. the heavy jobs gated off by the
+  # `changes` job on a docs-only push), and fails if any failed or were
+  # cancelled.
+  all-checks-passed:
+    needs: [changes, lint, test, extension-update-test, pg-tle-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify all jobs are listed in needs
+        # Ensures this job won't silently ignore a newly-added job that was
+        # omitted from the needs list above.
+        run: |
+          DEFINED=$(python3 -c "
+          import yaml
+          with open('.github/workflows/ci.yml') as f:
+              w = yaml.safe_load(f)
+          print('\n'.join(sorted(j for j in w['jobs'] if j != 'all-checks-passed')))
+          ")
+          NEEDED=$(echo '${{ toJson(needs) }}' | python3 -c "
+          import json, sys
+          print('\n'.join(sorted(json.load(sys.stdin))))
+          ")
+          if [ "$DEFINED" != "$NEEDED" ]; then
+            echo "Some jobs are missing from all-checks-passed needs:"
+            diff <(echo "$DEFINED") <(echo "$NEEDED")
+            exit 1
+          fi
+      - name: Check all jobs passed or were skipped
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more jobs failed or were cancelled"
+            exit 1
+          fi
+# vi: expandtab ts=2 sw=2
