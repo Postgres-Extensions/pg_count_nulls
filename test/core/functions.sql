@@ -1,3 +1,29 @@
+/*
+ * TODO, next time this file is substantially touched - reconsider two
+ * things, not urgent now but worth revisiting rather than forgetting:
+ *
+ * 1. test/install (pgxntool's committed-once installer, see
+ *    Postgres-Extensions/cat_tools's test/install/load.sql): cat_tools uses
+ *    it to centralize its fresh/update/existing load-mode switching in ONE
+ *    place, run once, rather than count_nulls's current test/deps.sql
+ *    (loaded per test file, reinstalling every time). That's a real,
+ *    independent argument for test/install regardless of the schema
+ *    question - count_nulls just hasn't needed to revisit it.
+ *
+ * 2. The debuggability cost of this file's loop-driven, ncs()-indirected
+ *    design isn't really about automated TAP output (which mostly localizes
+ *    failures fine) - it's that a developer can trivially `psql`, `\i` a
+ *    traditional, self-contained test file, and interactively poke at the
+ *    resulting state; doing the same with this file's generated names and
+ *    shared ncs() lookup is much less direct. That's the actual reason
+ *    count_nulls originally had separate, deliberately-independent smoke
+ *    test files alongside this shared helper (sanity.sql was the last one;
+ *    removed once its behavioral coverage turned out to be a strict subset
+ *    of test__functionality's, but the debuggability angle it existed for
+ *    is real and would be worth an intentional replacement, not just an
+ *    absence, if this file's indirection ever becomes a genuine problem).
+ */
+
 CREATE SCHEMA _null_count_test;
 
 -- See bottom as well!
@@ -219,6 +245,12 @@ BEGIN
 END
 $body$;
 
-SET SEARCH_PATH = _null_count_test, tap, :schema;
+/*
+ * Deliberately does NOT restore :"schema" (the schema count_nulls is
+ * installed into) onto search_path here - whether the caller wants it there
+ * (testing unqualified/on-search-path use) or not (testing fully-qualified/
+ * off-search-path use) differs per test file, so each caller sets its own
+ * search_path explicitly after \i'ing this file.
+ */
 
 -- vi: expandtab sw=2 ts=2

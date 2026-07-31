@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# compare_fresh_vs_update - structurally compare every object the count_nulls
+# extension owns between a FRESH install (CREATE EXTENSION at current) and an
+# UPDATED one (CREATE EXTENSION at FROM_VERSION, then ALTER EXTENSION
+# UPDATE), in the same schema. A fixed pgTAP expected-output suite (see
+# test/deps.sql's 'update' mode) only proves the specific behaviors it
+# happens to assert still work - it does not prove an update script left
+# object definitions/comments/ACLs BYTE-FOR-BYTE identical to a fresh
+# install of the same version. This catches divergence classes a fixed
+# suite doesn't already know to test for.
+#
+# Modeled on the manual technique used in Postgres-Extensions/cat_tools#46,
+# which found a real bug this way (a pre-0.2.2 update path left
+# `EXECUTE PROCEDURE` hardcoded in a trigger body that fresh installs had
+# already updated to `EXECUTE FUNCTION`). Unlike that PR, this is committed,
+# reusable tooling rather than a one-off manual diff.
+#
+# What's compared, per object the extension owns (discovered live via
+# pg_depend - see extension_members(), not a hardcoded object list, so a
+# newly added function is automatically covered without editing this
+# script): pg_get_functiondef() (full definition: schema, args, body,
+# volatility, strictness - everything), its comment (obj_description), and
+# its ACL (proacl). count_nulls currently ships only functions/triggers, no
+# views - the doc this is modeled on also compares pg_get_viewdef/type
+# labels/extension membership for extensions that have those; add a query
+# for the relevant catalog (pg_class for views, pg_type for types, ...) the
+# same way if count_nulls ever grows one.
+#
+# USAGE: bin/compare_fresh_vs_update [SCHEMA] [FROM_VERSION]
+#   SCHEMA       - schema both installs target (default: unqualified, same
+#                  as TEST_SCHEMA empty - see the Makefile). Both installs
+#                  use the SAME schema, since the point is comparing object
+#                  definitions, not exercising schema-qualification (that's
+#                  TEST_SCHEMA's job in the regular suite).
+#   FROM_VERSION - the update origin (default: 0.9.6, the oldest version
+#                  count_nulls still ships a full install script for).
+#
+# Exits nonzero (and prints a real diff) on ANY difference. Scratch
+# databases are dropped on exit regardless of outcome.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+schema=${1:-}
+from_version=${2:-0.9.6}
+
+fresh_db=compare_fresh_vs_update_fresh
+update_db=compare_fresh_vs_update_updated
+fresh_snapshot=$(mktemp)
+update_snapshot=$(mktemp)
+
+cleanup() {
+  dropdb --if-exists "$fresh_db"
+  dropdb --if-exists "$update_db"
+  rm -f "$fresh_snapshot" "$update_snapshot"
+}
+trap cleanup EXIT
+
+# extension_members(): every object pg_depend records as owned by the
+# count_nulls extension (deptype 'e'), restricted to pg_proc for now (see
+# the header comment on extending this). Ordered by name/args so the two
+# snapshots line up for a textual diff regardless of OID assignment order,
+# which differs between a fresh install and an update.
+query() {
+  cat <<'SQL'
+SELECT
+  '-- ' || p.oid::regprocedure::text || E'\n'
+  || pg_get_functiondef(p.oid) || E'\n'
+  || '-- comment: ' || coalesce(obj_description(p.oid, 'pg_proc'), '(none)') || E'\n'
+  || '-- acl: ' || coalesce(p.proacl::text, '(default)') || E'\n'
+FROM pg_depend d
+JOIN pg_extension x ON d.refobjid = x.oid AND x.extname = 'count_nulls'
+JOIN pg_proc p ON d.objid = p.oid AND d.classid = 'pg_proc'::regclass
+WHERE d.deptype = 'e'
+ORDER BY p.proname, p.oid::regprocedure::text;
+SQL
+}
+
+install_in_schema() {
+  local db=$1 sql=""
+  if [ -n "$schema" ]; then
+    sql="CREATE SCHEMA IF NOT EXISTS \"$schema\"; SET search_path = \"$schema\"; "
+  fi
+  echo "$sql"
+}
+
+createdb "$fresh_db"
+psql -d "$fresh_db" -v ON_ERROR_STOP=1 -c "$(install_in_schema "$fresh_db")CREATE EXTENSION count_nulls"
+
+createdb "$update_db"
+psql -d "$update_db" -v ON_ERROR_STOP=1 -c "$(install_in_schema "$update_db")CREATE EXTENSION count_nulls VERSION '$from_version'"
+psql -d "$update_db" -v ON_ERROR_STOP=1 -c "SET client_min_messages = WARNING; ALTER EXTENSION count_nulls UPDATE"
+
+psql -d "$fresh_db"  -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$fresh_snapshot"
+psql -d "$update_db" -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$update_snapshot"
+
+if diff -u "$fresh_snapshot" "$update_snapshot"; then
+  echo "OK: fresh install and $from_version->current update produce IDENTICAL object definitions/comments/ACLs"
+else
+  echo "FAIL: update path diverges from a fresh install of the same version - see diff above" >&2
+  exit 1
+fi
