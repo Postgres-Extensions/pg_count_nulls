@@ -32,8 +32,8 @@ TEST_SCHEMA ?=
 export PGOPTIONS := $(PGOPTIONS) -c count_nulls.test_schema=$(TEST_SCHEMA)
 
 # Every TEST_SCHEMA value the suite is tested against. A single source so
-# test-schema-all and CI (once collapsed - see the "why not a CI matrix"
-# note below) can't silently drift onto different sets.
+# test-schema-all/test-update-schema-all and CI can't silently drift onto
+# different sets.
 TEST_SCHEMA_VALUES = "" Quoted
 
 # TEST_SCHEMA is deliberately NOT a CI matrix dimension: unlike PostgreSQL
@@ -57,3 +57,35 @@ test-schema-all:
 		echo "=== TEST_SCHEMA=$$schema ==="; \
 		$(MAKE) test TEST_SCHEMA="$$schema" || exit 1; \
 	done
+
+# TEST_LOAD_SOURCE selects how test/install/load.sql installs count_nulls
+# for the WHOLE test run:
+#   - fresh (default): CREATE EXTENSION count_nulls (current version).
+#   - update: CREATE EXTENSION at the oldest version we still ship a full
+#     install script for (0.9.6), then ALTER EXTENSION UPDATE to current -
+#     committed, since test/install runs outside any per-test rolled-back
+#     transaction (see pgxntool/README.asc's Update & Upgrade (U&U) Testing
+#     section for why the commit matters).
+#   - existing: count_nulls is already installed (a real `pg_upgrade` run,
+#     external to this invocation) - test/install only asserts it's present
+#     and current, it does not drop/create/update anything. Meant to be run
+#     with CONTRIB_TESTDB=<db> EXTRA_REGRESS_OPTS=--use-existing against a
+#     real database, not via a make wrapper here.
+#
+# "update" (this) is extension-level (ALTER EXTENSION UPDATE); "upgrade" is
+# cluster-level (pg_upgrade) - 'existing' is how that axis is exercised.
+#
+# Propagated the same way as TEST_SCHEMA: via the count_nulls.test_load_mode
+# GUC, exported unconditionally through PGOPTIONS, read without missing_ok.
+TEST_LOAD_SOURCE ?= fresh
+ifeq ($(filter $(TEST_LOAD_SOURCE),fresh update existing),)
+$(error TEST_LOAD_SOURCE must be 'fresh', 'update' or 'existing', got '$(TEST_LOAD_SOURCE)')
+endif
+export PGOPTIONS := $(PGOPTIONS) -c count_nulls.test_load_mode=$(TEST_LOAD_SOURCE)
+
+# Convenience wrapper: `make test-update` == `make test TEST_LOAD_SOURCE=update`.
+# Must recurse (a fresh $(MAKE)) rather than depend on `test`, so the
+# parse-time TEST_LOAD_SOURCE conditional above re-evaluates with update set.
+.PHONY: test-update
+test-update:
+	$(MAKE) test TEST_LOAD_SOURCE=update
