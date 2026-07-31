@@ -340,8 +340,9 @@ jobs:
   # when registered through AWS pg_tle's database-backed catalog instead of
   # a filesystem .control file - relevant for pg_tle-based deployment
   # targets (e.g. AWS RDS). Orthogonal to the fresh/update/upgrade axis
-  # above: this job only covers a fresh install via pg_tle, not update/
-  # upgrade through it (a further step, tracked separately).
+  # above: this job covers both a fresh install AND the 0.9.6 -> current
+  # update path via pg_tle (not a binary pg_upgrade through it - that's a
+  # further step, tracked separately).
   pg-tle-test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
@@ -461,6 +462,33 @@ jobs:
             echo "FAIL: expected null_count(1, NULL, 2) = 1, got '$RESULT'"; exit 1
           fi
       - name: Verify no stray extension control files after the fresh-install smoke test
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Update 0.9.6 -> current and run the suite, purely via pg_tle (existing mode)
+        # A SECOND, separate scratch database (created after the template1
+        # registration above, so it inherits both registrations, same
+        # reasoning as count_nulls_smoke above) - proves the extension-UPDATE
+        # path, not just a fresh install, also never touches the filesystem
+        # when deployed via pg_tle. update-scenario creates the database,
+        # CREATE EXTENSIONs at 0.9.6, plants + proves the dependency guard,
+        # ALTER EXTENSION UPDATEs to current, then runs the full pgTAP suite
+        # against that real updated database in existing mode - no changes
+        # needed to that flow itself, it's already pg_tle-transparent once
+        # the target database descends from the pg_tle-registered template1.
+        #
+        # TEST_EXISTING_DEPLOY=pgtle is the one piece of new plumbing this
+        # needed in bin/test_existing: without it, run_suite's normal
+        # `make test`/`make verify-results` would silently `make install`
+        # count_nulls onto the filesystem (pgxntool's `test` target
+        # unconditionally depends on `install`), defeating the entire point
+        # of this job. In pgtle mode it instead calls `make testdeps` +
+        # `make installcheck` directly (neither depends on `install`) and
+        # runs pgxntool/verify-results-pgtap.sh's pass/fail check directly -
+        # see bin/test_existing's TEST_EXISTING_DEPLOY comment for the full
+        # reasoning.
+        run: |
+          test ! -e /usr/share/postgresql/${{ matrix.pg }}/extension/count_nulls.control
+          TEST_EXISTING_DEPLOY=pgtle bin/test_existing update-scenario count_nulls_pgtle_update "" 0.9.6
+      - name: Verify no stray extension control files after the update-path test
         run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
 
   # A single stable check name for use as a required status check in branch

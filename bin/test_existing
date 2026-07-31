@@ -46,6 +46,28 @@
 # non-CASCADE DROP EXTENSION fails, and actively PROVE that (see
 # bin/test_existing.sql/assert_guard.sql): if the drop unexpectedly succeeds,
 # this script fails CI rather than silently passing.
+#
+# TEST_EXISTING_DEPLOY (optional environment variable, read by run_suite):
+#   unset/filesystem (default): count_nulls was deployed the normal way (a
+#     real `make install`). run_suite uses `make test` / `make verify-results`
+#     as it always has.
+#   pgtle: count_nulls was deployed purely through pg_tle's database-backed
+#     catalog (see the pg-tle-test CI job), never `make install`ed onto the
+#     filesystem. pgxntool's `test` target unconditionally depends on
+#     `install` (TEST_DEPS += install installcheck in base.mk), so naively
+#     calling `make test` here would silently `make install` count_nulls onto
+#     disk, creating a filesystem count_nulls.control that would shadow the
+#     pg_tle registration on any FUTURE version-less CREATE EXTENSION in the
+#     same cluster - defeating the entire point of a pg_tle-only proof, and
+#     doing so without ever raising an error. In this mode run_suite instead
+#     calls `make testdeps` + `make installcheck` directly (neither depends on
+#     `install` - see base.mk's `testdeps: pgtap` and
+#     `installcheck: $(TEST_RESULT_FILES) ...`), then runs
+#     pgxntool/verify-results-pgtap.sh directly against the results - the same
+#     check `make verify-results` runs, but the script itself takes only
+#     TESTOUT as an argument and has no dependency on the `test` target, so
+#     calling it directly gets the same pass/fail logic without the
+#     `install` side effect.
 set -euo pipefail
 
 # Run from the repository root (where `make` works and test paths resolve),
@@ -213,8 +235,21 @@ run_suite() {
   #      would re-run FRESH (against a new throwaway DB) instead of
   #      verifying THIS existing database.
   local existing_args="TEST_LOAD_SOURCE=existing TEST_SCHEMA=$schema CONTRIB_TESTDB=$db EXTRA_REGRESS_OPTS=--use-existing PGXNTOOL_ENABLE_TEST_BUILD=no"
-  make test $existing_args
-  make verify-results $existing_args
+  if [ "${TEST_EXISTING_DEPLOY:-}" = pgtle ]; then
+    # pg_tle mode: see the TEST_EXISTING_DEPLOY comment in the file header.
+    # `make test`/`make verify-results` are NOT used here because `test`
+    # unconditionally depends on `install` (a real filesystem install) - the
+    # whole point of this mode is proving count_nulls is never touched on
+    # disk. `testdeps` and `installcheck` carry no such dependency.
+    make testdeps $existing_args
+    make installcheck $existing_args
+    local testout
+    testout=$(make -s print-TESTOUT $existing_args 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p')
+    pgxntool/verify-results-pgtap.sh "$testout"
+  else
+    make test $existing_args
+    make verify-results $existing_args
+  fi
 }
 
 usage() {
