@@ -213,6 +213,14 @@ jobs:
         run: make install
       - name: Update 0.9.6 -> current and run the suite
         run: make verify-results TEST_LOAD_SOURCE=update
+      - name: Structurally compare the updated objects against a fresh install
+        # A fixed pgTAP suite only proves the specific behaviors it asserts
+        # still hold; it can't catch an update script that leaves some
+        # definition/comment/ACL subtly different from what a fresh install
+        # of the same version produces. bin/compare_fresh_vs_update installs
+        # both ways itself (in its own scratch databases) and diffs every
+        # object the extension owns - any nonempty diff fails the step.
+        run: bin/compare_fresh_vs_update "${{ matrix.schema }}" 0.9.6
 
   # Proves count_nulls survives a BINARY pg_upgrade (in-place catalog
   # migration to a newer PostgreSQL major), not just an in-place extension
@@ -309,6 +317,15 @@ jobs:
         # a fresh install instead of the migrated objects.
         run: bin/test_existing run-suite count_nulls_upgrade "${{ matrix.schema }}"
 
+  # Fresh-install smoke test only, deliberately - NOT extended to the
+  # update path. pgxntool 2.3.0's fix for installcheck's ordering bug
+  # (Postgres-Extensions/pgxntool#83) made `installcheck` (and so `make
+  # test`) unconditionally depend on `install`, which writes a real
+  # .control file to disk - defeating the entire point of proving a pg_tle
+  # deployment never touches the filesystem. There's currently no way to
+  # invoke the real pgTAP suite without that happening first; filed as
+  # Postgres-Extensions/pgxntool#90. Revisit extending this job to the
+  # update path once that's resolved.
   pg-tle-test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'

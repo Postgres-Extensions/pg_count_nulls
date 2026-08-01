@@ -23,6 +23,14 @@ then invoke via `runtests()`.
   `test__*` functions covering function definitions, immutability/
   strictness, and behavior across `anyarray`/`json`/`jsonb` and both
   trigger functions.
+- `../bin/compare_fresh_vs_update` — not part of the pgTAP suite itself: a
+  standalone script the `extension-update-test` CI job runs after
+  `TEST_LOAD_SOURCE=update`, which installs fresh and 0.9.6-then-updated
+  copies of the extension in their own scratch databases and diffs
+  `pg_get_functiondef`/comments/ACLs for every object the extension owns.
+  Catches an update script leaving some definition subtly different from a
+  fresh install, even when the fixed pgTAP suite above still passes (it
+  only asserts the specific behaviors it happens to check).
 - `sql/extension_tests.sql` — `\i`'s `core/functions.sql`, adds two more
   `test__*` functions of its own (`test__check_ncs`, asserting count_nulls
   landed where expected; `test__shutdown__drop_all`, asserting it can be
