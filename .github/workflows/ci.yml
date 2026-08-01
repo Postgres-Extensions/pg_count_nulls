@@ -16,6 +16,16 @@
 #                              own job would only duplicate this job's own
 #                              per-PG-version container/checkout setup for
 #                              no added confidence.
+#   pg-upgrade-test         -- BINARY pg_upgrade: install 0.9.6 on an OLD
+#                              PostgreSQL major, binary-upgrade the cluster
+#                              to a NEWER major, then update the extension
+#                              to current - proves objects created on an
+#                              old server still work when read on a new
+#                              one. A smaller old_pg/new_pg matrix (not the
+#                              full PG matrix - by far the most expensive
+#                              job here, installing two full PostgreSQL
+#                              majors and running the real pg_upgrade
+#                              binary per leg).
 #   pg-tle-test             -- pg_tle DEPLOYMENT: fresh install registered
 #                              through AWS pg_tle's database-backed catalog
 #                              instead of a filesystem .control file.
@@ -239,6 +249,102 @@ jobs:
       - name: Update 0.9.6 -> current and run the suite
         run: make verify-results TEST_LOAD_SOURCE=update
 
+  # Proves count_nulls survives a BINARY pg_upgrade (in-place catalog
+  # migration to a newer PostgreSQL major), not just an in-place extension
+  # update. Installs 0.9.6 on an old cluster, plants a dependency guard,
+  # binary-pg_upgrades to a newer cluster, updates the extension to current,
+  # then runs the suite against the REAL migrated objects in existing mode.
+  # No bridge-update step first: count_nulls has always been pure SQL
+  # functions with no SELECT-*-over-catalog views, so it has no known
+  # pg_upgrade-unsafe old version to bridge past.
+  #
+  # Deliberately not doing a stepwise every-major-in-sequence climb (one
+  # cluster walking 10->11->12->...->newest, vs. the single big jumps here):
+  # that would catch a regression specific to one particular major-to-major
+  # boundary, which would matter if count_nulls had views/functions touching
+  # catalog internals, but it doesn't - pure SQL functions over anyarray/
+  # json/jsonb, nothing version-sensitive to break at a specific boundary.
+  # Revisit if count_nulls ever grows something catalog-touching.
+  #
+  # Not yet crossed with TEST_SCHEMA (a later phase adds that, once it can
+  # do so for both this job and the test job's update leg together).
+  pg-upgrade-test:
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
+    strategy:
+      matrix:
+        old_pg: ["10", "12"]
+        new_pg: ["18"]
+    name: 🔄 Binary pg_upgrade ${{ matrix.old_pg }} → ${{ matrix.new_pg }}
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    env:
+      # Both clusters must use the same initdb options or pg_upgrade
+      # refuses to run.
+      INITDB_OPTS: --data-checksums --auth trust
+    steps:
+      - name: Start PostgreSQL ${{ matrix.old_pg }}
+        run: pg-start ${{ matrix.old_pg }}
+      - name: Recreate old cluster with data checksums enabled
+        run: |
+          pg_ctlcluster ${{ matrix.old_pg }} test stop
+          pg_dropcluster ${{ matrix.old_pg }} test
+          # -p 5432: pg_createcluster assigns the next available port, which
+          # may not be 5432 after pg-start has claimed and released it.
+          # Force 5432 so subsequent psql/createdb calls connect without -p.
+          pg_createcluster -p 5432 ${{ matrix.old_pg }} test -- $INITDB_OPTS
+          pg_ctlcluster ${{ matrix.old_pg }} test start
+          pg_isready -t 30
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Install count_nulls into old cluster
+        run: make install
+      - name: Prepare the old cluster (install + dependency guard)
+        # prepare-old installs count_nulls at 0.9.6, then plants + proves
+        # the dependency guard, so a later accidental CASCADE drop anywhere
+        # in this job cannot silently make the eventual existing-mode run
+        # test a fresh install instead.
+        run: bin/test_existing prepare-old count_nulls_upgrade "" 0.9.6
+      - name: Install PostgreSQL ${{ matrix.new_pg }}
+        run: apt-get install -y postgresql-${{ matrix.new_pg }} postgresql-server-dev-${{ matrix.new_pg }}
+      - name: Install count_nulls into new cluster
+        # PG_CONFIG must be specified explicitly: at this point both old
+        # and new PostgreSQL are installed, and the default pg_config on
+        # PATH may not be the new version's.
+        run: make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.new_pg }}/bin/pg_config
+      - name: Stop old cluster, binary pg_upgrade to PostgreSQL ${{ matrix.new_pg }}, start new cluster
+        run: |
+          pg_ctlcluster ${{ matrix.old_pg }} test stop
+          pg_createcluster -p 5432 ${{ matrix.new_pg }} test -- $INITDB_OPTS
+          # PG17+ writes logs to $new_datadir/pg_upgrade_output.d/; older
+          # versions write to CWD. Search both on failure.
+          mkdir -p /tmp/pg_upgrade_logs
+          chown postgres:postgres /tmp/pg_upgrade_logs
+          su -c "cd /tmp/pg_upgrade_logs && /usr/lib/postgresql/${{ matrix.new_pg }}/bin/pg_upgrade \
+            -b /usr/lib/postgresql/${{ matrix.old_pg }}/bin \
+            -B /usr/lib/postgresql/${{ matrix.new_pg }}/bin \
+            -d /var/lib/postgresql/${{ matrix.old_pg }}/test \
+            -D /var/lib/postgresql/${{ matrix.new_pg }}/test \
+            -o '-c config_file=/etc/postgresql/${{ matrix.old_pg }}/test/postgresql.conf' \
+            -O '-c config_file=/etc/postgresql/${{ matrix.new_pg }}/test/postgresql.conf'" postgres \
+            || { find /tmp/pg_upgrade_logs \
+                      /var/lib/postgresql/${{ matrix.new_pg }}/test/pg_upgrade_output.d \
+                      -name '*.log' 2>/dev/null | sort | xargs -r tail -n +1; exit 1; }
+          pg_ctlcluster ${{ matrix.new_pg }} test start
+      - name: Update the pg_upgraded extension to the current version
+        # Exercises ALTER EXTENSION UPDATE on genuinely pg_upgraded objects
+        # (the extension binary pg_upgrade just migrated), running the
+        # 0.9.6->stable update script.
+        run: bin/test_existing update count_nulls_upgrade
+      - name: Run the suite against the pg_upgraded database (existing mode)
+        # run-suite asserts the version, re-proves the dependency guard
+        # still blocks a non-CASCADE drop (i.e. it survived pg_upgrade),
+        # drops the guard, then runs the suite against the REAL pg_upgraded
+        # + updated database via --use-existing (so pg_regress does not
+        # drop/recreate it) - a plain fresh `make test` would silently test
+        # a fresh install instead of the migrated objects.
+        run: bin/test_existing run-suite count_nulls_upgrade ""
+
   pg-tle-test:
     needs: [changes]
     # Skipped outright (not just matrix-reduced like `test` above) on a
@@ -372,7 +478,7 @@ jobs:
   # `changes` job on a docs-only push), and fails if any failed or were
   # cancelled.
   all-checks-passed:
-    needs: [changes, lint, test, pg-tle-test]
+    needs: [changes, lint, test, pg-upgrade-test, pg-tle-test]
     if: always()
     runs-on: ubuntu-latest
     steps:
