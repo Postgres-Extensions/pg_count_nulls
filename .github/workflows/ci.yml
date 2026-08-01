@@ -10,20 +10,27 @@
 #                              see TEST_SCHEMA in the Makefile).
 #   extension-update-test   -- IN-PLACE update: CREATE EXTENSION at 0.9.6
 #                              then ALTER EXTENSION UPDATE (same PostgreSQL,
-#                              no pg_upgrade), same PG matrix as test.
+#                              no pg_upgrade), same PG x schema matrix as
+#                              test.
 #   pg-upgrade-test         -- BINARY pg_upgrade: install 0.9.6 on an OLD
 #                              PostgreSQL major, binary-upgrade the cluster
 #                              to a NEWER major, then update the extension
 #                              to current - proves objects created on an
 #                              old server still work when read on a new
-#                              one. A smaller old_pg/new_pg matrix (not the
-#                              full PG matrix - by far the most expensive
-#                              job here, installing two full PostgreSQL
-#                              majors and running the real pg_upgrade
-#                              binary per leg).
+#                              one. A smaller old_pg/new_pg x schema matrix
+#                              (not the full PG matrix - by far the most
+#                              expensive job here, installing two full
+#                              PostgreSQL majors and running the real
+#                              pg_upgrade binary per leg).
 #   pg-tle-test             -- pg_tle DEPLOYMENT: fresh install registered
 #                              through AWS pg_tle's database-backed catalog
 #                              instead of a filesystem .control file.
+#
+# test / extension-update-test / pg-upgrade-test all cross PostgreSQL major
+# with the TEST_SCHEMA axis: without a schema specified at all (empty) and
+# with one explicitly targeted, using a name that requires SQL identifier
+# quoting. Every leg of every job passes against the SAME expected output -
+# see test/README.md for how the suite stays schema/load-mode invariant.
 #
 # `changes` is a cheap gate that lets the heavy jobs above skip themselves on
 # doc-only pushes, and also derives the shared PostgreSQL-major list those
@@ -191,9 +198,12 @@ jobs:
       matrix:
         # From the single source in the changes job.
         pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
-    name: ⬆️ Extension update test on PostgreSQL ${{ matrix.pg }}
+        schema: ["", Quoted]
+    name: ⬆️ Extension update test on PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema == '' && 'none' || matrix.schema }})
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
+    env:
+      TEST_SCHEMA: ${{ matrix.schema }}
     steps:
       - name: Start PostgreSQL ${{ matrix.pg }}
         run: pg-start ${{ matrix.pg }}
@@ -221,8 +231,6 @@ jobs:
   # json/jsonb, nothing version-sensitive to break at a specific boundary.
   # Revisit if count_nulls ever grows something catalog-touching.
   #
-  # Not yet crossed with TEST_SCHEMA (a later phase adds that, once it can
-  # do so for both this job and extension-update-test together).
   pg-upgrade-test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
@@ -230,7 +238,8 @@ jobs:
       matrix:
         old_pg: ["10", "12"]
         new_pg: ["18"]
-    name: 🔄 Binary pg_upgrade ${{ matrix.old_pg }} → ${{ matrix.new_pg }}
+        schema: ["", Quoted]
+    name: 🔄 Binary pg_upgrade ${{ matrix.old_pg }} → ${{ matrix.new_pg }} (schema ${{ matrix.schema == '' && 'none' || matrix.schema }})
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
     env:
@@ -259,7 +268,7 @@ jobs:
         # the dependency guard, so a later accidental CASCADE drop anywhere
         # in this job cannot silently make the eventual existing-mode run
         # test a fresh install instead.
-        run: bin/test_existing prepare-old count_nulls_upgrade "" 0.9.6
+        run: bin/test_existing prepare-old count_nulls_upgrade "${{ matrix.schema }}" 0.9.6
       - name: Install PostgreSQL ${{ matrix.new_pg }}
         run: apt-get install -y postgresql-${{ matrix.new_pg }} postgresql-server-dev-${{ matrix.new_pg }}
       - name: Install count_nulls into new cluster
@@ -298,7 +307,7 @@ jobs:
         # + updated database via --use-existing (so pg_regress does not
         # drop/recreate it) - a plain fresh `make test` would silently test
         # a fresh install instead of the migrated objects.
-        run: bin/test_existing run-suite count_nulls_upgrade ""
+        run: bin/test_existing run-suite count_nulls_upgrade "${{ matrix.schema }}"
 
   pg-tle-test:
     needs: [changes]
