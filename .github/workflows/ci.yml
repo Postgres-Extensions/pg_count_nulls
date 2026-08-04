@@ -316,6 +316,16 @@ jobs:
         # drop/recreate it) - a plain fresh `make test` would silently test
         # a fresh install instead of the migrated objects.
         run: bin/test_existing run-suite count_nulls_upgrade "${{ matrix.schema }}"
+      - name: Structurally compare the pg_upgraded database against a fresh install
+        # Same rationale as extension-update-test's own use of this tool (see
+        # below), but here the "other side" is the REAL database a binary
+        # pg_upgrade + ALTER EXTENSION UPDATE just produced, not a scratch
+        # database this tool created itself - passed as EXISTING_DB so the
+        # script queries it in place instead of re-deriving it. Catches a
+        # divergence class the fixed pgTAP suite above doesn't: an object
+        # left subtly different (body, comment, ACL) by surviving a real
+        # catalog migration, as opposed to only an in-place update.
+        run: bin/compare_fresh_vs_update "${{ matrix.schema }}" 0.9.6 count_nulls_upgrade
 
   # Fresh-install smoke test only, deliberately - NOT extended to the
   # update path. pgxntool 2.3.0's fix for installcheck's ordering bug
