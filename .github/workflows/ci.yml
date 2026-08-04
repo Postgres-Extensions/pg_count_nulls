@@ -26,7 +26,8 @@
 #                              job here, installing two full PostgreSQL
 #                              majors and running the real pg_upgrade
 #                              binary per leg).
-#   pg-tle-test             -- pg_tle DEPLOYMENT: fresh install registered
+#   pg-tle-test             -- pg_tle DEPLOYMENT: fresh install AND the
+#                              0.9.6 -> current update path, both registered
 #                              through AWS pg_tle's database-backed catalog
 #                              instead of a filesystem .control file.
 #
@@ -360,15 +361,18 @@ jobs:
           bin/compare_fresh_vs_update "" 0.9.6 count_nulls_upgrade_none
           bin/compare_fresh_vs_update Quoted 0.9.6 count_nulls_upgrade_quoted
 
-  # Fresh-install smoke test only, deliberately - NOT extended to the
-  # update path. pgxntool 2.3.0's fix for installcheck's ordering bug
+  # Covers both a fresh install AND the 0.9.6 -> current update path, both
+  # purely via pg_tle. pgxntool 2.3.0's fix for installcheck's ordering bug
   # (Postgres-Extensions/pgxntool#83) made `installcheck` (and so `make
   # test`) unconditionally depend on `install`, which writes a real
   # .control file to disk - defeating the entire point of proving a pg_tle
-  # deployment never touches the filesystem. There's currently no way to
-  # invoke the real pgTAP suite without that happening first; filed as
-  # Postgres-Extensions/pgxntool#90. Revisit extending this job to the
-  # update path once that's resolved.
+  # deployment never touches the filesystem. There's still no upstream fix
+  # for that (Postgres-Extensions/pgxntool#90, open) that would let
+  # bin/test_existing's real pgTAP suite run without it, so the update-path
+  # steps below use TEST_EXISTING_DEPLOY=pgtle (see bin/test_existing),
+  # which instead sandboxes `make test`'s install step behind a scratch
+  # DESTDIR - harmless here since a pg_tle-deployed database never needs
+  # those files.
   pg-tle-test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
@@ -489,6 +493,44 @@ jobs:
             echo "FAIL: expected null_count(1, NULL, 2) = 1, got '$RESULT'"; exit 1
           fi
       - name: Verify no stray extension control files after the fresh-install smoke test
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Install count_nulls at 0.9.6, purely via pg_tle (update-path prep)
+        # A SECOND, separate scratch database, created after the template1
+        # registration above so it inherits both registrations too (same
+        # reasoning as count_nulls_smoke). prepare-old creates the database,
+        # CREATE EXTENSIONs at 0.9.6 (pure SQL - resolves through pg_tle's
+        # catalog, no `make install` call, which would defeat the whole
+        # point), then plants + proves the dependency guard so a stray
+        # CASCADE drop anywhere below can't silently turn the eventual
+        # existing-mode run into a fresh install instead.
+        run: |
+          test ! -e /usr/share/postgresql/${{ matrix.pg }}/extension/count_nulls.control
+          bin/test_existing prepare-old count_nulls_pgtle_update "" 0.9.6
+      - name: Verify no stray extension control files after installing 0.9.6 via pg_tle
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Update 0.9.6 -> current, purely via pg_tle
+        # Pure SQL (ALTER EXTENSION ... UPDATE), no filesystem write either.
+        run: bin/test_existing update count_nulls_pgtle_update
+      - name: Verify no stray extension control files after the pg_tle update
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Run the real pgTAP suite against the pg_tle-updated database (existing mode)
+        # run-suite re-proves the dependency guard, drops it, then runs the
+        # FULL suite via --use-existing against the real pg_tle-deployed +
+        # updated database - the same suite/expected-output as every other
+        # leg (see test/README.md). TEST_EXISTING_DEPLOY=pgtle makes
+        # run-suite sandbox `make test`'s otherwise-unavoidable `install`
+        # step behind a scratch DESTDIR instead of writing to the real
+        # extension directory (see bin/test_existing's TEST_EXISTING_DEPLOY
+        # comment), and makes test/install/load.sql's existing-mode
+        # assertion cross-check pgtle.available_extensions() instead of
+        # pg_available_extensions (which never sees pg_tle registrations -
+        # see the Makefile's TEST_EXISTING_DEPLOY comment).
+        run: TEST_EXISTING_DEPLOY=pgtle bin/test_existing run-suite count_nulls_pgtle_update ""
+      - name: Verify no stray extension control files after the pgTAP suite
+        # THE step that actually proves the DESTDIR sandboxing worked: the
+        # real extension directory must still be clean after `make test`
+        # ran (with its otherwise-unavoidable `install` step) sandboxed
+        # behind a scratch DESTDIR.
         run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
 
   # A single stable check name for use as a required status check in branch
