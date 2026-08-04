@@ -30,3 +30,30 @@ include lint.mk
 # still fails loudly instead of looking identical to a deliberately empty one.
 TEST_SCHEMA ?=
 export PGOPTIONS := $(PGOPTIONS) -c count_nulls.test_schema=$(TEST_SCHEMA)
+
+# Every TEST_SCHEMA value the suite is tested against. A single source so
+# test-schema-all and CI (once collapsed - see the "why not a CI matrix"
+# note below) can't silently drift onto different sets.
+TEST_SCHEMA_VALUES = "" Quoted
+
+# TEST_SCHEMA is deliberately NOT a CI matrix dimension: unlike PostgreSQL
+# major (a real environment difference - different binaries, different
+# container) or pg_tle deployment (a real isolation boundary - must never
+# share a runner with a filesystem install), a schema name is just an input
+# value the SAME assertions run against in the SAME environment. Crossing it
+# into the matrix would only multiply job count (container boot + checkout
+# per leg) for zero additional confidence per dollar. Loop it inside make
+# instead - the same pattern test-update already uses for the load-mode
+# axis, generalized to a list via a shell loop. Sequential recursive $(MAKE)
+# calls, deliberately NOT bare prerequisites (which Make can run
+# concurrently under -j and would collide on the same throwaway test
+# database). `exit 1` on the first failure so a later iteration can't hide
+# an earlier one; each iteration is echoed so a failure's TEST_SCHEMA value
+# is still directly attributable in the log even without a separate CI
+# check name per value.
+.PHONY: test-schema-all
+test-schema-all:
+	@for schema in $(TEST_SCHEMA_VALUES); do \
+		echo "=== TEST_SCHEMA=$$schema ==="; \
+		$(MAKE) test TEST_SCHEMA="$$schema" || exit 1; \
+	done
