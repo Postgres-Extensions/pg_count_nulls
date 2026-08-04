@@ -12,7 +12,7 @@ $$;
  * mistake!
  */
 
-/*
+/* EXCLUDED CODE — unused boilerplate template for new test functions, not meant to be enabled
 CREATE FUNCTION test__
 () RETURNS SETOF text LANGUAGE plpgsql AS $body$
 DECLARE
@@ -180,7 +180,7 @@ BEGIN
   );
 
   -- Doesn't work for array types
-  /*
+  /* EXCLUDED CODE — doesn't work for array types
   RETURN NEXT bag_eq(
     $$SELECT a, b, c, null_count( array[a], array[b], array[c] ) FROM test_data$$
     , $$SELECT * FROM test_data$$
