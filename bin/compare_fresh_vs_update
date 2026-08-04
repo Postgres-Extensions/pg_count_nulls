@@ -27,7 +27,7 @@
 # for the relevant catalog (pg_class for views, pg_type for types, ...) the
 # same way if count_nulls ever grows one.
 #
-# USAGE: bin/compare_fresh_vs_update [SCHEMA] [FROM_VERSION]
+# USAGE: bin/compare_fresh_vs_update [SCHEMA] [FROM_VERSION] [EXISTING_DB]
 #   SCHEMA       - schema both installs target (default: unqualified, same
 #                  as TEST_SCHEMA empty - see the Makefile). Both installs
 #                  use the SAME schema, since the point is comparing object
@@ -35,24 +35,42 @@
 #                  TEST_SCHEMA's job in the regular suite).
 #   FROM_VERSION - the update origin (default: 0.9.6, the oldest version
 #                  count_nulls still ships a full install script for).
+#                  Ignored when EXISTING_DB is given - that database's
+#                  history is whatever already produced it.
+#   EXISTING_DB  - compare against this ALREADY-POPULATED database instead
+#                  of creating+updating a scratch one (default: none, create
+#                  our own scratch "updated" database as before). Lets
+#                  callers that produced their update/upgrade result some
+#                  other way - e.g. bin/test_existing's real binary
+#                  pg_upgrade path - reuse this same comparison without this
+#                  script re-deriving that database itself. The caller owns
+#                  EXISTING_DB's lifecycle: it is never created, updated, or
+#                  dropped here, only queried.
 #
 # Exits nonzero (and prints a real diff) on ANY difference. Scratch
-# databases are dropped on exit regardless of outcome.
+# database(s) this script created itself are dropped on exit regardless of
+# outcome; an EXISTING_DB passed in is left untouched.
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
 
 schema=${1:-}
 from_version=${2:-0.9.6}
+existing_db=${3:-}
 
 fresh_db=compare_fresh_vs_update_fresh
-update_db=compare_fresh_vs_update_updated
+update_db=${existing_db:-compare_fresh_vs_update_updated}
 fresh_snapshot=$(mktemp)
 update_snapshot=$(mktemp)
 
 cleanup() {
   dropdb --if-exists "$fresh_db"
-  dropdb --if-exists "$update_db"
+  # Only drop update_db if we created it ourselves - an EXISTING_DB belongs
+  # to the caller (e.g. the real pg_upgraded database bin/test_existing is
+  # still using) and must survive this script running.
+  if [ -z "$existing_db" ]; then
+    dropdb --if-exists "$update_db"
+  fi
   rm -f "$fresh_snapshot" "$update_snapshot"
 }
 trap cleanup EXIT
@@ -88,16 +106,21 @@ install_in_schema() {
 createdb "$fresh_db"
 psql -d "$fresh_db" -v ON_ERROR_STOP=1 -c "$(install_in_schema)CREATE EXTENSION count_nulls"
 
-createdb "$update_db"
-psql -d "$update_db" -v ON_ERROR_STOP=1 -c "$(install_in_schema)CREATE EXTENSION count_nulls VERSION '$from_version'"
-psql -d "$update_db" -v ON_ERROR_STOP=1 -c "SET client_min_messages = WARNING; ALTER EXTENSION count_nulls UPDATE"
+if [ -z "$existing_db" ]; then
+  createdb "$update_db"
+  psql -d "$update_db" -v ON_ERROR_STOP=1 -c "$(install_in_schema)CREATE EXTENSION count_nulls VERSION '$from_version'"
+  psql -d "$update_db" -v ON_ERROR_STOP=1 -c "SET client_min_messages = WARNING; ALTER EXTENSION count_nulls UPDATE"
+fi
 
 psql -d "$fresh_db"  -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$fresh_snapshot"
 psql -d "$update_db" -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$update_snapshot"
 
+source_desc="$from_version->current update"
+[ -n "$existing_db" ] && source_desc="'$existing_db'"
+
 if diff -u "$fresh_snapshot" "$update_snapshot"; then
-  echo "OK: fresh install and $from_version->current update produce IDENTICAL object definitions/comments/ACLs"
+  echo "OK: fresh install and $source_desc produce IDENTICAL object definitions/comments/ACLs"
 else
-  echo "FAIL: update path diverges from a fresh install of the same version - see diff above" >&2
+  echo "FAIL: $source_desc diverges from a fresh install of the same version - see diff above" >&2
   exit 1
 fi
