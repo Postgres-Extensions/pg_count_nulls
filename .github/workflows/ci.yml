@@ -5,6 +5,25 @@ on:
       - master
   pull_request:
 jobs:
+  lint:
+    name: 🧹 SQL lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: make lint
+        # Deliberately not pre-initializing the .vendor/linter submodule via
+        # `submodules:` above -- letting `make lint` self-init it (lint.mk)
+        # is what actually proves that works from a plain clone.
+        #
+        # continue-on-error: sql/count_nulls.sql (the only sql/ file in
+        # LINT_TARGETS) is clean, but test/core/functions.sql has
+        # pre-existing comment-line-prefix findings (commented-out
+        # template/test code) that are out of scope here and tracked
+        # separately. Drop continue-on-error once that's cleaned up.
+        run: make lint
+        continue-on-error: true
+
   test:
     strategy:
       matrix:
