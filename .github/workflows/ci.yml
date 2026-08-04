@@ -5,6 +5,18 @@ on:
       - master
   pull_request:
 jobs:
+  lint:
+    name: 🧹 SQL lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: make lint
+        # Deliberately not pre-initializing the .vendor/linter submodule via
+        # `submodules:` above -- letting `make lint` self-init it (lint.mk)
+        # is what actually proves that works from a plain clone.
+        run: make lint
+
   test:
     strategy:
       matrix:
