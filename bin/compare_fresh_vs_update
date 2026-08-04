@@ -36,29 +36,52 @@
 # for the relevant catalog (pg_class for views, pg_type for types, ...) the
 # same way if count_nulls ever grows one.
 #
-# USAGE: bin/compare_fresh_vs_update [FROM_VERSION]
+# USAGE: bin/compare_fresh_vs_update [FROM_VERSION] [EXISTING_DB]
 #   FROM_VERSION - the update origin (default: 0.9.6, the oldest version
 #                  count_nulls still ships a full install script for).
+#                  Ignored when EXISTING_DB is given - that database's
+#                  history is whatever already produced it.
+#   EXISTING_DB  - compare a fresh install against this ALREADY-POPULATED
+#                  database instead of creating+updating a scratch one
+#                  (default: none - create our own scratch "updated"
+#                  database, as described below). Lets callers that
+#                  produced their update/upgrade result some other way -
+#                  e.g. bin/test_existing's real binary pg_upgrade path via
+#                  the pg-upgrade-test CI job - reuse this same comparison
+#                  without this script re-deriving that database itself.
+#                  The caller owns EXISTING_DB's lifecycle: it is never
+#                  created, updated, or dropped here, only queried. Because
+#                  EXISTING_DB was installed independently (via
+#                  test/helpers/create_test_schema.sql, same as this
+#                  script's own installs, but generating its OWN separate
+#                  random name), the schema used for this run's fresh
+#                  install is DISCOVERED from EXISTING_DB itself instead of
+#                  freshly generated - same lookup
+#                  test/helpers/find_test_schema.sql uses, inlined here for
+#                  the same reason the cleanup sweep below is (this script
+#                  shells out to psql per statement rather than `\i`-ing
+#                  psql helper files) - so both sides of the comparison
+#                  still land in the SAME schema.
 #
-# Both installs always target ONE freshly, randomly generated schema (same
-# naming convention as test/helpers/create_test_schema.sql: a constant
-# `count_nulls test schema ` prefix - trailing space included, so SQL
-# identifier quoting is always required - plus a random suffix), generated
-# ONCE up front and reused for BOTH scratch databases. That sharing is
-# deliberate, not an oversight: the whole point of this script is comparing
-# object DEFINITIONS between a fresh install and an updated one, and
-# pg_get_functiondef()'s output is schema-qualified, so installing into two
-# DIFFERENTLY-named schemas would show a spurious schema-name difference
-# instead of isolating real update-vs-fresh divergence. There is therefore
-# nothing left for a caller to usefully specify here, unlike
-# test/helpers/create_test_schema.sql's per-install independent
-# randomization - every comparison this script runs always goes through a
-# schema that requires SQL identifier quoting, on every run, rather than
-# optionally through an unquoted/default one. create_test_schema.sql itself
-# isn't reused to generate it: that file's whole job is producing an
-# INDEPENDENT random name per install/session, the opposite of what's
-# needed here, so the same short name-generation expression is instead
-# computed directly below.
+# Absent EXISTING_DB, both installs always target ONE freshly, randomly
+# generated schema (same naming convention as
+# test/helpers/create_test_schema.sql: a constant `count_nulls test schema `
+# prefix - trailing space included, so SQL identifier quoting is always
+# required - plus a random suffix), generated ONCE up front and reused for
+# BOTH scratch databases. That sharing is deliberate, not an oversight: the
+# whole point of this script is comparing object DEFINITIONS between a
+# fresh install and an updated one, and pg_get_functiondef()'s output is
+# schema-qualified, so installing into two DIFFERENTLY-named schemas would
+# show a spurious schema-name difference instead of isolating real
+# update-vs-fresh divergence. There is therefore nothing left for a caller
+# to usefully specify here, unlike test/helpers/create_test_schema.sql's
+# per-install independent randomization - every comparison this script
+# runs always goes through a schema that requires SQL identifier quoting,
+# on every run, rather than optionally through an unquoted/default one.
+# create_test_schema.sql itself isn't reused to generate it: that file's
+# whole job is producing an INDEPENDENT random name per install/session,
+# the opposite of what's needed here, so the same short name-generation
+# expression is instead computed directly below.
 #
 # CREATE SCHEMA + CREATE EXTENSION ... WITH SCHEMA is used for both installs
 # (never `SET search_path` beforehand): mutating search_path ahead of
@@ -69,7 +92,8 @@
 # version of this reasoning.
 #
 # Exits nonzero (and prints a real diff) on ANY difference. Scratch
-# databases are dropped on exit regardless of outcome.
+# database(s) this script created itself are dropped on exit regardless of
+# outcome; an EXISTING_DB passed in is left untouched.
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
@@ -81,39 +105,77 @@ from_version=${1:-0.9.6}
 # future caller-supplied value containing a quote shouldn't be able to
 # break out of the literal.
 from_version_lit="${from_version//\'/\'\'}"
+existing_db=${2:-}
 
 fresh_db=compare_fresh_vs_update_fresh
-update_db=compare_fresh_vs_update_updated
+update_db=${existing_db:-compare_fresh_vs_update_updated}
 fresh_snapshot=$(mktemp)
 update_snapshot=$(mktemp)
 
 cleanup() {
   dropdb --if-exists "$fresh_db"
-  dropdb --if-exists "$update_db"
+  # Only drop update_db if we created it ourselves - an EXISTING_DB belongs
+  # to the caller (e.g. the real pg_upgraded database bin/test_existing is
+  # still using) and must survive this script running.
+  if [ -z "$existing_db" ]; then
+    dropdb --if-exists "$update_db"
+  fi
   rm -f "$fresh_snapshot" "$update_snapshot"
 }
 trap cleanup EXIT
-
-# One schema name, shared by both scratch databases - see the header
-# comment above on why a single shared name (not two independently
-# randomized ones) is required here. Same generation expression as
-# test/helpers/create_test_schema.sql, computed once via SQL for
-# consistency with it rather than reimplemented in bash. Targets the
-# "postgres" maintenance database explicitly (-d), matching every other
-# psql call in this script and in bin/test_existing: unlike those calls,
-# neither scratch database exists yet at this point, so there's no
-# self-created target to connect to - "postgres" is the one database an
-# initdb'd cluster is always guaranteed to have.
-schema=$(psql -d postgres -tAc "SELECT 'count_nulls test schema ' || substr(md5(random()::text), 1, 12)")
 
 # psql only interpolates :"var"-style variables when reading a script (-f
 # or stdin), NOT inside a -c command string - confirmed directly (a bare
 # :"schema" inside a -c string reaches the server un-substituted and is a
 # syntax error). Every use below is therefore a plain double-quoted SQL
-# identifier built directly in bash instead, doubling any embedded double
-# quote the SQL spec's own identifier-quoting rule requires (not expected
-# in the generated name itself, which is prefix+hex, but this keeps the
-# quoting correct regardless).
+# identifier/literal built directly in bash instead.
+
+if [ -n "$existing_db" ]; then
+  # Discover the schema EXISTING_DB's count_nulls actually lives in - same
+  # validation test/helpers/find_test_schema.sql performs (hard failure,
+  # not a pgTAP-style assertion, on anything but exactly one match), run
+  # against EXISTING_DB instead of `\i`'d in a shared session. Two separate
+  # invocations, not one: a DO block's own "DO" command-completion tag
+  # prints to stdout even under -tA (confirmed directly - unlike a RAISE
+  # NOTICE, which goes to stderr), so combining the validation and the
+  # SELECT in one invocation would capture "DO" as a spurious first line
+  # of $schema. psql also does NOT interpolate variables inside
+  # dollar-quoted strings (see test/helpers/create_test_schema.sql's header
+  # comment for the fuller explanation), so this can't embed $existing_db
+  # in the RAISE EXCEPTION text below - the caller already knows which
+  # EXISTING_DB it passed.
+  psql -d "$existing_db" -v ON_ERROR_STOP=1 -c "
+DO \$\$
+DECLARE
+  v_count int := (SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'count_nulls test schema %');
+BEGIN
+  IF v_count <> 1 THEN
+    RAISE EXCEPTION
+      'expected exactly one schema matching ''count_nulls test schema %%'', found %'
+      , v_count;
+  END IF;
+END
+\$\$;" >/dev/null
+  schema=$(psql -d "$existing_db" -tAc "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'count_nulls test schema %'")
+else
+  # One schema name, shared by both scratch databases - see the header
+  # comment above on why a single shared name (not two independently
+  # randomized ones) is required here. Same generation expression as
+  # test/helpers/create_test_schema.sql, computed once via SQL for
+  # consistency with it rather than reimplemented in bash. Targets the
+  # "postgres" maintenance database explicitly (-d), matching every other
+  # psql call in this script and in bin/test_existing: unlike those
+  # calls, neither scratch database exists yet at this point, so there's
+  # no self-created target to connect to - "postgres" is the one
+  # database an initdb'd cluster is always guaranteed to have.
+  schema=$(psql -d postgres -tAc "SELECT 'count_nulls test schema ' || substr(md5(random()::text), 1, 12)")
+fi
+
+# Every use below is a plain double-quoted SQL identifier built directly in
+# bash, doubling any embedded double quote the SQL spec's own
+# identifier-quoting rule requires (not expected in the generated name
+# itself, which is prefix+hex, but this keeps the quoting correct
+# regardless).
 schema_ident="\"${schema//\"/\"\"}\""
 
 # query(): every object pg_depend records as owned by the
@@ -137,12 +199,13 @@ SQL
 }
 
 # Cleanup-before-create sweep, inlined rather than factored into a shared
-# helper file: this script's own two scratch databases are already dropped
-# by the cleanup trap above on every exit path, so a leftover schema here
-# can only come from a prior run that never reached that trap at all (e.g.
-# a killed process) - a narrower case than test/helpers/create_test_schema.sql's,
+# helper file: this script's own scratch databases are already dropped by
+# the cleanup trap above on every exit path, so a leftover schema here can
+# only come from a prior run that never reached that trap at all (e.g. a
+# killed process) - a narrower case than test/helpers/create_test_schema.sql's,
 # which guards a persistent, reused database. Same DO block that file uses
-# for the same purpose.
+# for the same purpose. Never run against EXISTING_DB - that database (and
+# its schema) belongs entirely to the caller.
 drop_stale_schemas_sql=$(cat <<'SQL'
 DO $$
 DECLARE
@@ -166,7 +229,8 @@ SQL
 # silently dropped the cleanup DO block and CREATE SCHEMA, leaving CREATE
 # EXTENSION's WITH SCHEMA targeting a schema that was never created ("ERROR:
 # schema ... does not exist"). A single -c string, semicolon-separated, has
-# always run every statement it contains, on every supported version.
+# always run every statement it contains, on every supported version. Only
+# ever called for databases this script itself owns (never EXISTING_DB).
 install_extension() {
   local db=$1 version_clause=$2
   psql -d "$db" -v ON_ERROR_STOP=1 -c "
@@ -179,16 +243,21 @@ CREATE EXTENSION count_nulls WITH SCHEMA $schema_ident$version_clause;
 createdb "$fresh_db"
 install_extension "$fresh_db" ""
 
-createdb "$update_db"
-install_extension "$update_db" " VERSION '$from_version_lit'"
-psql -d "$update_db" -v ON_ERROR_STOP=1 -c "SET client_min_messages = WARNING; ALTER EXTENSION count_nulls UPDATE"
+if [ -z "$existing_db" ]; then
+  createdb "$update_db"
+  install_extension "$update_db" " VERSION '$from_version_lit'"
+  psql -d "$update_db" -v ON_ERROR_STOP=1 -c "SET client_min_messages = WARNING; ALTER EXTENSION count_nulls UPDATE"
+fi
 
 psql -d "$fresh_db"  -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$fresh_snapshot"
 psql -d "$update_db" -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$update_snapshot"
 
+source_desc="$from_version->current update"
+[ -n "$existing_db" ] && source_desc="'$existing_db'"
+
 if diff -u "$fresh_snapshot" "$update_snapshot"; then
-  echo "OK: fresh install and $from_version->current update produce IDENTICAL object definitions/comments/ACLs"
+  echo "OK: fresh install and $source_desc produce IDENTICAL object definitions/comments/ACLs"
 else
-  echo "FAIL: update path diverges from a fresh install of the same version - see diff above" >&2
+  echo "FAIL: $source_desc diverges from a fresh install of the same version - see diff above" >&2
   exit 1
 fi

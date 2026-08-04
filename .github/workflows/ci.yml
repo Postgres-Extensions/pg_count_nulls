@@ -452,6 +452,23 @@ jobs:
         run: |
           bin/test_existing run-suite upgrade_oldest_first
           bin/test_existing run-suite upgrade_current_first
+      - name: Structurally compare the pg_upgraded databases against a fresh install
+        # Same rationale as the test job's own update leg's use of this tool
+        # (see above), but here the "other side" is a REAL database a binary
+        # pg_upgrade + ALTER EXTENSION UPDATE (in one order or the other)
+        # just produced, not a scratch database this tool created itself -
+        # passed as EXISTING_DB so the script queries it in place instead of
+        # re-deriving it, discovering that database's OWN randomly generated
+        # schema (each of the twin databases got an independent one from
+        # bin/test_existing prepare-old) rather than generating a new one, so
+        # both sides of each comparison still land in the same schema. Once
+        # per database, since each holds an independent ordering's result.
+        # Catches a divergence class the fixed pgTAP suite above doesn't: an
+        # object left subtly different (body, comment, ACL) by surviving a
+        # real catalog migration, as opposed to only an in-place update.
+        run: |
+          bin/compare_fresh_vs_update 0.9.6 upgrade_oldest_first
+          bin/compare_fresh_vs_update 0.9.6 upgrade_current_first
 
   pg-tle-test:
     needs: [changes]
