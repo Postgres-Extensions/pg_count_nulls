@@ -22,6 +22,14 @@
 # code creates, so pg_upgrade needs to run against already-current objects,
 # not ones still frozen at the old INSTALL_VERSION.
 #
+# The pg-tle-test CI job's update-path leg reuses the exact same three
+# subcommands unmodified, in the same prepare-old -> update -> run-suite
+# order (a pg_tle-registered database needs no real pg_upgrade or
+# filesystem install between prepare-old and update - both are pure SQL,
+# so there's no binary-upgrade step to reorder around there) - see
+# TEST_EXISTING_DEPLOY below for the one piece of plumbing that job
+# needed.
+#
 # Not CI-only: a developer can run any subcommand locally against a scratch
 # database. Modeled on Postgres-Extensions/cat_tools's bin/test_existing.
 # Two differences from that script: count_nulls ships no
@@ -53,6 +61,37 @@
 # actively PROVE that (see bin/test_existing.sql/assert_guard.sql): if the
 # drop unexpectedly succeeds, this script fails CI rather than silently
 # passing.
+#
+# TEST_EXISTING_DEPLOY (optional environment variable, read by run_suite):
+#   unset/filesystem (default): count_nulls was deployed the normal way (a
+#     real `make install`). run_suite calls `make test` exactly as before.
+#   pgtle: count_nulls was deployed purely through pg_tle's database-backed
+#     catalog (see the pg-tle-test CI job), never `make install`ed onto the
+#     filesystem. pgxntool's `test` target unconditionally depends on
+#     `install` (base.mk: `TEST_DEPS += install installcheck`, and
+#     `installcheck: install` - the pgxntool#83/2.3.0 ordering fix), so
+#     naively calling `make test` here would silently write a real
+#     count_nulls.control to disk - which would then shadow the pg_tle
+#     registration on any FUTURE version-less CREATE EXTENSION in the same
+#     cluster, defeating the entire point of proving a pg_tle-only
+#     deployment, without ever raising an error.
+#
+#     In this mode run_suite instead passes DESTDIR=<scratch dir> to `make
+#     test`: PGXS's own `install` target prefixes every path with
+#     $(DESTDIR), so it still "runs" (satisfying Make's dependency graph)
+#     but writes harmlessly to a throwaway directory instead of the real
+#     extension directory - fine here specifically because the pg_tle-
+#     deployed database under test never needs those files (it's already
+#     live via pg_tle's own catalog). One more prerequisite needs help:
+#     `installcheck: pgtap` has a DESTDIR-aware prerequisite check
+#     ($(DESTDIR)$(datadir)/extension/pgtap.control) but a DESTDIR-blind
+#     recipe (`pgxn install pgtap --sudo`) - against an empty scratch
+#     DESTDIR, Make would consider pgtap "missing" and re-run that recipe
+#     for real (network + sudo), even though pgtap is already genuinely
+#     installed from an earlier CI step. seed_pgtap_stub() pre-seeds a
+#     zero-byte stub at that exact scratch-prefixed path so Make considers
+#     the prerequisite already satisfied and never invokes the real recipe.
+#     See Postgres-Extensions/pgxntool#90 (open, no upstream fix yet).
 set -euo pipefail
 
 # Run from the repository root (where `make` works and test paths resolve),
@@ -156,6 +195,30 @@ create_extension_in_schema() {
 }
 
 # ---------------------------------------------------------------------------
+# pg_tle DESTDIR sandbox helpers (see TEST_EXISTING_DEPLOY in the file header)
+# ---------------------------------------------------------------------------
+
+# Seed a stub pgtap.control at the exact DESTDIR-prefixed path pgxntool's
+# `pgtap` target's prerequisite check looks for
+# ($(DESTDIR)$(datadir)/extension/pgtap.control), so Make considers that
+# prerequisite already satisfied and never invokes the real recipe (`pgxn
+# install pgtap --sudo`) against a scratch DESTDIR that can never contain a
+# real install. Existence is all Make checks here - pgtap has no other
+# prerequisites to compare timestamps against - so a zero-byte file is
+# enough.
+seed_pgtap_stub() {
+  local destdir=$1 datadir control_path
+  datadir=$(make -s print-datadir 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p')
+  if [ -z "$datadir" ]; then
+    echo "FAIL: could not resolve datadir (make -s print-datadir)" >&2
+    exit 1
+  fi
+  control_path="${destdir}${datadir}/extension/pgtap.control"
+  mkdir -p "$(dirname "$control_path")"
+  : > "$control_path"
+}
+
+# ---------------------------------------------------------------------------
 # Subcommand implementations
 # ---------------------------------------------------------------------------
 
@@ -179,16 +242,44 @@ prepare_old() {
 # then runs the suite via --use-existing so pg_regress does NOT drop/recreate
 # the database.
 run_suite() {
-  local db=$1 schema=$2
+  local db=$1 schema=$2 deploy=${TEST_EXISTING_DEPLOY:-filesystem}
+  case "$deploy" in
+    filesystem|pgtle) ;;
+    *)
+      echo "FAIL: TEST_EXISTING_DEPLOY must be 'filesystem' or 'pgtle', got '$deploy'" >&2
+      exit 1
+      ;;
+  esac
+
   assert_version "$db" current
   assert_drop_blocked "$db"
   drop_guard "$db"
+
+  # See TEST_EXISTING_DEPLOY in the file header. Only 'pgtle' changes
+  # anything here; a scratch DESTDIR is created and baked into a trap so it
+  # is cleaned up regardless of how this function/script exits (a RETURN
+  # trap would NOT fire under `set -e` if `make test` below reports a
+  # regression - EXIT does, for any exit reason).
+  local destdir_opt=()
+  if [ "$deploy" = pgtle ]; then
+    local scratch
+    scratch=$(mktemp -d)
+    trap "rm -rf '$scratch'" EXIT
+    seed_pgtap_stub "$scratch"
+    destdir_opt=(DESTDIR="$scratch")
+  fi
+
   # In existing mode pg_regress runs against $db via --use-existing and must
   # NOT create/drop its own database. `make test` (not just `make
   # verify-results`) is a real gate as of pgxntool 2.3.0 - it now exits
   # non-zero on regression failures instead of always exiting 0 regardless
   # of pg_regress's result (see this repo's pgxntool 2.3.0 bump).
-  make test TEST_LOAD_SOURCE=existing TEST_SCHEMA="$schema" CONTRIB_TESTDB="$db" EXTRA_REGRESS_OPTS=--use-existing
+  # TEST_EXISTING_DEPLOY is passed through explicitly (not left to
+  # environment inheritance) so test/install/load.sql's existing-mode
+  # assertion (via the count_nulls.test_existing_deploy GUC - see the
+  # Makefile) picks the right source regardless of how this function is
+  # invoked.
+  make test TEST_LOAD_SOURCE=existing TEST_SCHEMA="$schema" CONTRIB_TESTDB="$db" EXTRA_REGRESS_OPTS=--use-existing TEST_EXISTING_DEPLOY="$deploy" "${destdir_opt[@]}"
 }
 
 usage() {
