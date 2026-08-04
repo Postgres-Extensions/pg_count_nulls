@@ -17,30 +17,30 @@ jobs:
         # is what actually proves that works from a plain clone.
         run: make lint
 
-  # Fresh install, across the PG matrix AND a schema matrix (TEST_SCHEMA,
-  # picked up from the environment by test/install/load.sql via the
-  # count_nulls.test_schema GUC - see the Makefile). Empty ('') runs WITHOUT
-  # specifying a schema at all; 'Quoted' runs WITH one explicitly specified,
-  # using a name that requires SQL identifier quoting. Both legs matter and
-  # both pass against the SAME test/expected/extension_tests.out (see
-  # test/README.md for how the suite keeps its output schema-invariant).
+  # Fresh install, across the PG matrix. Every TEST_SCHEMA value (empty -
+  # no schema targeting at all - and 'Quoted', a name requiring SQL
+  # identifier quoting) is exercised too, via `make test-schema-all`'s
+  # in-Makefile loop rather than a CI matrix dimension - a schema name is
+  # just an input the same assertions run against, not a real environment
+  # difference, so crossing it into the matrix would only multiply job
+  # count for no added confidence (see the Makefile's TEST_SCHEMA_VALUES
+  # comment). Both legs pass against the SAME
+  # test/expected/extension_tests.out (see test/README.md for how the
+  # suite keeps its output schema-invariant).
   test:
     strategy:
       matrix:
         pg: [18, 17, 16, 15, 14, 13, 12, 11, 10]
-        schema: ["", Quoted]
-    name: 🐘 PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema == '' && 'none' || matrix.schema }})
+    name: 🐘 PostgreSQL ${{ matrix.pg }}
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
-    env:
-      TEST_SCHEMA: ${{ matrix.schema }}
     steps:
       - name: Start PostgreSQL ${{ matrix.pg }}
         run: pg-start ${{ matrix.pg }}
       - name: Check out the repo
         uses: actions/checkout@v4
-      - name: Test on PostgreSQL ${{ matrix.pg }}
-        run: pg-build-test
+      - name: Test on PostgreSQL ${{ matrix.pg }}, across every TEST_SCHEMA value
+        run: make test-schema-all
 
   pg-tle-test:
     strategy:
