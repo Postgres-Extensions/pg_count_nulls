@@ -85,12 +85,20 @@ jobs:
         if: steps.gate.outputs.decision == 'run'
         # Intentionally tracks the major-version tag (not a pinned SHA) so
         # upstream fixes are picked up automatically.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
+          # v7 refuses by default to check out a fork's PR head under
+          # pull_request_target (the classic "pwn request" footgun), since
+          # that trigger runs with this repo's secrets/token. Safe to opt in
+          # here specifically because of the guards already in place above:
+          # gated to jnasbyupgrade's own PRs only, persist-credentials is
+          # false, and the checked-out code is only ever read for review
+          # context -- never built or executed.
+          allow-unsafe-pr-checkout: true
 
       - name: Run Claude Code Review
         if: steps.gate.outputs.decision == 'run'
