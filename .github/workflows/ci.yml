@@ -34,12 +34,19 @@
 #                              instead of a filesystem .control file.
 #
 # Every TEST_SCHEMA value (empty - no schema targeting at all - and
-# 'Quoted', a name requiring SQL identifier quoting) is exercised too, via
-# `make test-schema-all`'s in-Makefile loop rather than a CI matrix
-# dimension - a schema name is just an input the same assertions run
-# against, not a real environment difference, so crossing it into the
-# matrix would only multiply job count for no added confidence (see the
-# Makefile's TEST_SCHEMA_VALUES comment). Every leg passes against the SAME
+# 'Quoted', a name requiring SQL identifier quoting) is exercised in every
+# job above too, but never as a CI matrix dimension - a schema name is just
+# an input the same assertions run against, not a real environment
+# difference, so crossing it into the matrix would only multiply job count
+# for no added confidence (see the Makefile's TEST_SCHEMA_VALUES comment).
+# `test` loops it (both its fresh and update legs) via `make
+# test-schema-all` / `make test-update-schema-all`; `pg-upgrade-test`
+# (shell, not `make test`, for the parts that matter here) prepares two
+# databases - one per schema -
+# ahead of a single pg_upgrade call that migrates both at once, which is
+# strictly better than a doubled matrix would have been: it also halves the
+# number of actual pg_upgrade binary invocations, not just container/
+# checkout overhead. Every leg passes against the SAME
 # test/expected/extension_tests.out (see test/README.md for how the suite
 # keeps its output schema-invariant).
 #
@@ -249,8 +256,8 @@ jobs:
         run: make test-schema-all
       - name: Install count_nulls
         run: make install
-      - name: Update 0.9.6 -> current and run the suite
-        run: make verify-results TEST_LOAD_SOURCE=update
+      - name: Update 0.9.6 -> current and run the suite, across every TEST_SCHEMA value
+        run: make test-update-schema-all
 
   # Proves count_nulls survives a BINARY pg_upgrade (in-place catalog
   # migration to a newer PostgreSQL major). Installs 0.9.6 on an old
@@ -275,8 +282,16 @@ jobs:
   # json/jsonb, nothing version-sensitive to break at a specific boundary.
   # Revisit if count_nulls ever grows something catalog-touching.
   #
-  # Not yet crossed with TEST_SCHEMA (a later phase adds that, once it can
-  # do so for both this job and the test job's update leg together).
+  # Every TEST_SCHEMA value is exercised here too, but NOT via a matrix
+  # dimension (would double this job's already-expensive count) and not
+  # via a make-level loop either (bin/test_existing's steps below are
+  # shell, not `make test`) - instead, TWO databases (one per schema) are
+  # prepared before the SINGLE pg_upgrade call, which migrates the WHOLE
+  # cluster (every database in it) in one pass. This is strictly better
+  # than a doubled matrix would have been, not just cheaper: it also
+  # halves the number of actual pg_upgrade binary invocations (the single
+  # most expensive operation in this job) instead of just avoiding
+  # redundant container/checkout overhead.
   pg-upgrade-test:
     needs: [changes]
     # Skipped outright (not just matrix-reduced like `test`) on a draft PR:
@@ -311,23 +326,31 @@ jobs:
         uses: actions/checkout@v4
       - name: Install count_nulls into old cluster
         run: make install
-      - name: Prepare the old cluster (install + dependency guard)
+      - name: Prepare the old cluster (install + dependency guard), across every TEST_SCHEMA value
         # prepare-old installs count_nulls at 0.9.6, then plants + proves
         # the dependency guard, so a later accidental CASCADE drop anywhere
         # in this job cannot silently make the eventual existing-mode run
-        # test a fresh install instead.
-        run: bin/test_existing prepare-old count_nulls_upgrade "" 0.9.6
-      - name: Update the extension to the current version (still on the old cluster)
+        # test a fresh install instead. Two separate databases (distinct
+        # names, one per TEST_SCHEMA value) so both exist in the SAME
+        # cluster ahead of the single pg_upgrade call below - that one
+        # binary upgrade migrates both at once.
+        run: |
+          bin/test_existing prepare-old count_nulls_upgrade_none "" 0.9.6
+          bin/test_existing prepare-old count_nulls_upgrade_quoted Quoted 0.9.6
+      - name: Update the extension to the current version (still on the old cluster), across every TEST_SCHEMA value
         # Exercises ALTER EXTENSION UPDATE on the OLD cluster, BEFORE the
-        # binary pg_upgrade below, running the 0.9.6->stable update script -
-        # deliberately in this order (not update-after-upgrade): this job
-        # exists to prove pg_upgrade correctly migrates the objects
-        # count_nulls' CURRENT code creates, so pg_upgrade must run against
-        # already-current objects, not 0.9.6 ones. `make install` above
-        # already installed the current version's update scripts/control
-        # file into this (old) cluster's sharedir, so they're in place for
-        # this ALTER EXTENSION UPDATE to use.
-        run: bin/test_existing update count_nulls_upgrade
+        # binary pg_upgrade below, running the 0.9.6->stable update script,
+        # once per database prepared above - deliberately in this order
+        # (not update-after-upgrade): this job exists to prove pg_upgrade
+        # correctly migrates the objects count_nulls' CURRENT code creates,
+        # so pg_upgrade must run against already-current objects, not 0.9.6
+        # ones. `make install` above already installed the current
+        # version's update scripts/control file into this (old) cluster's
+        # sharedir, so they're in place for this ALTER EXTENSION UPDATE to
+        # use.
+        run: |
+          bin/test_existing update count_nulls_upgrade_none
+          bin/test_existing update count_nulls_upgrade_quoted
       - name: Install PostgreSQL ${{ matrix.new_pg }}
         run: apt-get install -y postgresql-${{ matrix.new_pg }} postgresql-server-dev-${{ matrix.new_pg }}
       - name: Install count_nulls into new cluster
@@ -354,14 +377,16 @@ jobs:
                       /var/lib/postgresql/${{ matrix.new_pg }}/test/pg_upgrade_output.d \
                       -name '*.log' 2>/dev/null | sort | xargs -r tail -n +1; exit 1; }
           pg_ctlcluster ${{ matrix.new_pg }} test start
-      - name: Run the suite against the pg_upgraded database (existing mode)
+      - name: Run the suite against the pg_upgraded database (existing mode), across every TEST_SCHEMA value
         # run-suite asserts the version, re-proves the dependency guard
         # still blocks a non-CASCADE drop (i.e. it survived both the update
         # and pg_upgrade), drops the guard, then runs the suite against the
         # REAL pg_upgraded database via --use-existing (so pg_regress does
         # not drop/recreate it) - a plain fresh `make test` would silently
         # test a fresh install instead of the migrated objects.
-        run: bin/test_existing run-suite count_nulls_upgrade ""
+        run: |
+          bin/test_existing run-suite count_nulls_upgrade_none ""
+          bin/test_existing run-suite count_nulls_upgrade_quoted Quoted
 
   pg-tle-test:
     needs: [changes]

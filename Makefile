@@ -101,3 +101,13 @@ export PGOPTIONS := $(PGOPTIONS) -c count_nulls.test_load_mode=$(TEST_LOAD_SOURC
 .PHONY: test-update
 test-update:
 	$(MAKE) test TEST_LOAD_SOURCE=update
+
+# Same TEST_SCHEMA loop as test-schema-all, but in update mode - used by the
+# test CI job's update leg instead of crossing TEST_SCHEMA into ITS matrix
+# too, same reasoning as test-schema-all above.
+.PHONY: test-update-schema-all
+test-update-schema-all:
+	@for schema in $(TEST_SCHEMA_VALUES); do \
+		echo "=== TEST_SCHEMA=$$schema (update) ==="; \
+		$(MAKE) test TEST_LOAD_SOURCE=update TEST_SCHEMA="$$schema" || exit 1; \
+	done
