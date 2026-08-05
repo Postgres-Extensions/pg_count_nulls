@@ -12,11 +12,17 @@
 #
 # The pg-upgrade-test CI job repeats the same sequence:
 #
-#   prepare-old (install + plant guard) -> [real pg_upgrade binary, in CI] ->
-#   update (ALTER EXTENSION UPDATE) -> run-suite (assert + run existing-mode)
+#   prepare-old (install + plant guard) -> update (ALTER EXTENSION UPDATE,
+#   on the OLD cluster, before pg_upgrade) -> [real pg_upgrade binary, in
+#   CI] -> run-suite (assert + run existing-mode)
 #
-# so it lives here once instead of being duplicated as inline YAML. Not
-# CI-only: a developer can run any subcommand locally against a scratch
+# so it lives here once instead of being duplicated as inline YAML. update
+# runs BEFORE the binary pg_upgrade, not after: the point of this job is
+# proving pg_upgrade correctly migrates the objects count_nulls' CURRENT
+# code creates, so pg_upgrade needs to run against already-current objects,
+# not ones still frozen at the old INSTALL_VERSION.
+#
+# Not CI-only: a developer can run any subcommand locally against a scratch
 # database. Modeled on Postgres-Extensions/cat_tools's bin/test_existing.
 # Two differences from that script: count_nulls ships no
 # SELECT-*-over-catalog views, so it has no known pg_upgrade-unsafe old
