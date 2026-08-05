@@ -17,13 +17,23 @@ jobs:
         # is what actually proves that works from a plain clone.
         run: make lint
 
+  # Fresh install, across the PG matrix AND a schema matrix (TEST_SCHEMA,
+  # picked up from the environment by test/install/load.sql via the
+  # count_nulls.test_schema GUC - see the Makefile). Empty ('') runs WITHOUT
+  # specifying a schema at all; 'Quoted' runs WITH one explicitly specified,
+  # using a name that requires SQL identifier quoting. Both legs matter and
+  # both pass against the SAME test/expected/extension_tests.out (see
+  # test/README.md for how the suite keeps its output schema-invariant).
   test:
     strategy:
       matrix:
         pg: [18, 17, 16, 15, 14, 13, 12, 11, 10]
-    name: 🐘 PostgreSQL ${{ matrix.pg }}
+        schema: ["", Quoted]
+    name: 🐘 PostgreSQL ${{ matrix.pg }} (schema ${{ matrix.schema == '' && 'none' || matrix.schema }})
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
+    env:
+      TEST_SCHEMA: ${{ matrix.schema }}
     steps:
       - name: Start PostgreSQL ${{ matrix.pg }}
         run: pg-start ${{ matrix.pg }}
