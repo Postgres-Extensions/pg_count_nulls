@@ -16,8 +16,10 @@ name: Claude Code Review
 # still can't trigger this secret-bearing job unless it's actually
 # jnasbyupgrade's own fork). The workflow file always comes from the base
 # branch (master), so a PR cannot modify the reviewer that runs on it. We
-# check out the PR head only for read context (persist-credentials: false)
-# and never build or execute PR code.
+# never check out the PR head ourselves -- claude-code-action fetches and
+# reads the PR's actual content internally, via refs/pull/<n>/head on this
+# base repo, so the fork's code is only ever read, never checked out into
+# this job's own workspace or built/executed.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -39,6 +41,11 @@ jobs:
       contents: read
       pull-requests: write   # post the review comments
       checks: read           # read sibling check-runs for the cost gate
+      # No narrower scope exists for cache-write alone; without this the
+      # action's own cache save step fails with a silent warning ("Cache
+      # reservation failed: cache write denied: token has no writable
+      # scopes") and the job still reports success, just slower/uncached.
+      actions: write
     steps:
       # COST GATE: the paid Claude review is the last thing to run. Wait for the
       # PR head's OTHER check-runs to finish and only proceed if they are clean.
@@ -81,16 +88,21 @@ jobs:
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
           echo "gate decision: $decision"
 
-      - name: Check out PR head (read-only context)
+      - name: Check out repo (base ref -- claude-code-action fetches the PR itself)
         if: steps.gate.outputs.decision == 'run'
         # Intentionally tracks the major-version tag (not a pinned SHA) so
         # upstream fixes are picked up automatically.
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-          persist-credentials: false
+        #
+        # Deliberately NOT overriding repository:/ref: to the PR head, and NOT
+        # setting allow-unsafe-pr-checkout: true. claude-code-action fetches
+        # and reads the PR's actual content itself, internally and safely, via
+        # refs/pull/<n>/head on THIS (base) repo -- a ref GitHub maintains for
+        # any PR, fork or not, specifically so tooling never needs direct
+        # access to the fork's own remote. Per the action's own docs
+        # (docs/security.md), checking out an untrusted PR ref into the
+        # workspace before invoking it is the anti-pattern to avoid, so this
+        # step just checks out the base branch, plain default behavior.
+        uses: actions/checkout@v7
 
       - name: Run Claude Code Review
         if: steps.gate.outputs.decision == 'run'
@@ -108,6 +120,14 @@ jobs:
           # tracking PR comment with a live checklist that updates as Claude
           # works, so a slow run is visible instead of silent.
           track_progress: true
+          # A bare `prompt:` (no @claude mention) runs in "agent mode", which
+          # decides which MCP servers to start by scanning --allowedTools
+          # inside claude_args -- it does NOT consult the code-review
+          # plugin's own allowed-tools frontmatter. Without this, the
+          # github_inline_comment MCP server never starts and the plugin
+          # silently falls back to one consolidated PR comment instead of
+          # real per-line inline comments (no error or warning either way).
+          claude_args: '--allowedTools mcp__github_inline_comment__create_inline_comment'
           # NOTE: plugin_marketplaces can't be pinned — it tracks the
           # marketplace repo's default branch (upstream anthropics/claude-code).
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
