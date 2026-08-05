@@ -25,28 +25,33 @@
 CREATE FUNCTION _null_count_test.test__check_ncs(
   schema_hint name DEFAULT NULLIF(current_setting('count_nulls.test_schema'), '')::name
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
-DECLARE
+BEGIN
     /*
      * When TEST_SCHEMA is non-empty we know exactly where count_nulls
-     * should be, so compare ncs() against that known value - a real
-     * assertion. When it's empty (schema_hint is NULL), there's no fixed
-     * expectation (it lands in 'public', an artifact of test/install's own
-     * bare connection - not something this test should hardcode), so fall
-     * back to ncs() itself: a no-op comparison that still exercises the
-     * call, without asserting a location this file has no business
-     * assuming.
+     * should be, so compare ncs() against that known value and assert it's
+     * off search_path - both real assertions. When it's empty (schema_hint
+     * is NULL), there's no fixed expectation (it lands in 'public', an
+     * artifact of test/install's own bare connection - not something this
+     * test should hardcode), so explicitly skip both assertions rather than
+     * faking a pass by comparing ncs() against itself - a skip provides
+     * honest zero coverage instead of a tautology that looks like coverage.
      */
-    s CONSTANT name = COALESCE(schema_hint, ncs());
-BEGIN
-    RETURN NEXT is(
-        ncs()
-        , s
-    );
-    RETURN NEXT is(
-        current_schemas(true) @> array[s]
-        , false
-        , 'count_nulls'' schema should not be in search path'
-    );
+    IF schema_hint IS NULL THEN
+        RETURN NEXT skip(
+            2
+            , 'TEST_SCHEMA is empty - no known target schema to assert against'
+        );
+    ELSE
+        RETURN NEXT is(
+            ncs()
+            , schema_hint
+        );
+        RETURN NEXT is(
+            current_schemas(true) @> array[schema_hint]
+            , false
+            , 'count_nulls'' schema should not be in search path'
+        );
+    END IF;
 END
 $body$;
 
