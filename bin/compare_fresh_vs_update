@@ -16,6 +16,15 @@
 # already updated to `EXECUTE FUNCTION`). Unlike that PR, this is committed,
 # reusable tooling rather than a one-off manual diff.
 #
+# Postgres-Extensions/cat_tools#67 proposes generalizing this exact
+# capability - "list every object an extension owns, with each object's
+# actual definition" - into a real, user-facing cat_tools feature, not
+# test-only plumbing tied to one extension's update path. If that lands,
+# this script's object-discovery-and-rendering logic (extension_members()
+# below, and the per-kind comparisons) is a natural candidate to
+# reimplement on top of it rather than staying a bespoke,
+# count_nulls-specific copy.
+#
 # What's compared, per object the extension owns (discovered live via
 # pg_depend - see extension_members(), not a hardcoded object list, so a
 # newly added function is automatically covered without editing this
