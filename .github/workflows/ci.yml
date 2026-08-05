@@ -402,8 +402,8 @@ jobs:
           bin/test_existing run-suite count_nulls_upgrade_none ""
           bin/test_existing run-suite count_nulls_upgrade_quoted Quoted
       - name: Structurally compare the pg_upgraded database against a fresh install, across every TEST_SCHEMA value
-        # Same rationale as extension-update-test's own use of this tool (see
-        # above), but here the "other side" is the REAL database a binary
+        # Same rationale as the test job's own update leg's use of this tool
+        # (see above), but here the "other side" is the REAL database a binary
         # pg_upgrade + ALTER EXTENSION UPDATE just produced, not a scratch
         # database this tool created itself - passed as EXISTING_DB so the
         # script queries it in place instead of re-deriving it. Catches a
