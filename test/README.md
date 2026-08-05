@@ -16,7 +16,8 @@ then invoke via `runtests()`.
 - `deps.sql` — loaded by every test file (via `load.sql` ->
   `pgxntool/setup.sql` -> `deps.sql`). No longer installs count_nulls
   itself (that's `install/load.sql`'s job); only for genuine per-test
-  dependency statements.
+  dependency statements. Currently empty - see its own header comment for
+  why it's kept that way rather than deleted.
 - `core/functions.sql` — a shared helper, `\i`'d by `sql/extension_tests.sql`.
   Defines `ncs()` (discovers, live, which schema count_nulls is actually
   installed in - never trusts a hardcoded/passed-in value) plus a battery of
