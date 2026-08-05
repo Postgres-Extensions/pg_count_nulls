@@ -35,9 +35,11 @@ DECLARE
      * determined content (via ncs() when there's no fixed target, via
      * schema_hint when there is), so the membership check below genuinely
      * exercises functions.sql's %I-qualification and load.sql's schema
-     * targeting - it isn't a tautology. Doesn't guard against some OTHER
-     * test mutating search_path mid-suite - see
-     * teardown__search_path_unchanged in test/core/functions.sql for that.
+     * targeting - it isn't a tautology.
+     *
+     * SEE ALSO: teardown__search_path_unchanged in test/core/functions.sql,
+     * which guards against some OTHER test mutating search_path mid-suite (a
+     * different risk than this check).
      */
     s CONSTANT name = COALESCE(schema_hint, ncs());
 BEGIN
