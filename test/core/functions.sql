@@ -22,6 +22,42 @@ $body$;
 */
 
 /*
+ * search_path guard: not a correctness assertion about count_nulls itself,
+ * but a guard against some OTHER test in this suite accidentally mutating
+ * search_path (e.g. via a stray SET) and leaking that mutation into every
+ * test that runs afterward. startup__ runs once, outside the per-test
+ * rollback, so the TEMP TABLE it creates survives; teardown__ runs inside
+ * every single test's rollback but can still read it. A plain exception is
+ * enough here - pgTAP's runner reports any exception raised by a teardown__
+ * function as "Test died: ..." against the test it ran after, no ok()/is()
+ * needed.
+ */
+CREATE FUNCTION _null_count_test.startup__capture_search_path
+() RETURNS SETOF text LANGUAGE plpgsql AS $body$
+BEGIN
+    CREATE TEMP TABLE search_path_baseline AS
+        SELECT current_setting('search_path') AS search_path;
+    RETURN;
+END
+$body$;
+
+CREATE FUNCTION _null_count_test.teardown__search_path_unchanged
+() RETURNS SETOF text LANGUAGE plpgsql AS $body$
+DECLARE
+    v_baseline text;
+    v_current  text := current_setting('search_path');
+BEGIN
+    SELECT search_path INTO v_baseline FROM search_path_baseline;
+    IF v_current IS DISTINCT FROM v_baseline THEN
+        RAISE EXCEPTION
+            'search_path was left dirty by the preceding test: expected %, got %'
+            , v_baseline, v_current;
+    END IF;
+    RETURN;
+END
+$body$;
+
+/*
  * function definition
  */
 CREATE FUNCTION test__definition
