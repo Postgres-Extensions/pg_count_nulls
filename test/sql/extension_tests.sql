@@ -27,21 +27,18 @@ CREATE FUNCTION _null_count_test.test__check_ncs(
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
 DECLARE
     /*
-     * When TEST_SCHEMA is non-empty we know exactly where count_nulls
-     * should be, so compare ncs() against that known value - a real
-     * assertion. When it's empty (schema_hint is NULL), there's no fixed
-     * expectation (it lands in 'public', an artifact of test/install's own
-     * bare connection - not something this test should hardcode), so fall
-     * back to ncs() itself: a no-op comparison that still exercises the
-     * call, without asserting a location this file has no business
-     * assuming.
+     * We either expect count_nulls' own schema to be in search_path, or we
+     * don't - and in this file we never do, in either leg: functions.sql
+     * unconditionally sets search_path to exclude it (see the header
+     * comment above), whether that's the empty leg's 'public' or the
+     * TEST_SCHEMA leg's known target. s is still real, independently
+     * determined content (via ncs() when there's no fixed target, via
+     * schema_hint when there is), so the membership check below genuinely
+     * exercises functions.sql's %I-qualification and load.sql's schema
+     * targeting - it isn't a tautology.
      */
     s CONSTANT name = COALESCE(schema_hint, ncs());
 BEGIN
-    RETURN NEXT is(
-        ncs()
-        , s
-    );
     RETURN NEXT is(
         current_schemas(true) @> array[s]
         , false
