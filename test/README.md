@@ -25,7 +25,7 @@ then invoke via `runtests()`.
   strictness, and behavior across `anyarray`/`json`/`jsonb` and both
   trigger functions.
 - `../bin/compare_fresh_vs_update` — not part of the pgTAP suite itself: a
-  standalone script the `extension-update-test` CI job runs after
+  standalone script the `test` CI job's update leg runs after
   `TEST_LOAD_SOURCE=update`, which installs fresh and 0.9.6-then-updated
   copies of the extension in their own scratch databases and diffs
   `pg_get_functiondef`/comments/ACLs for every object the extension owns.
