@@ -32,8 +32,10 @@ $body$;
  * compare current_setting('search_path') against that known literal. A
  * plain exception is enough here - pgTAP's runner reports any exception
  * raised by a teardown__ function as "Test died: ..." against the test it
- * ran after, no ok()/is() needed. Doesn't check WHERE count_nulls actually
- * landed - see test__check_ncs in test/sql/extension_tests.sql for that.
+ * ran after, no ok()/is() needed.
+ *
+ * SEE ALSO: test__check_ncs in test/sql/extension_tests.sql, which checks
+ * WHERE count_nulls actually landed (a different risk than this check).
  */
 CREATE FUNCTION _null_count_test.teardown__search_path_unchanged
 () RETURNS SETOF text LANGUAGE plpgsql AS $body$
