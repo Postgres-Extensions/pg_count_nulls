@@ -17,14 +17,22 @@ jobs:
         # is what actually proves that works from a plain clone.
         run: make lint
 
-  # Fresh install, across the PG matrix. Every TEST_SCHEMA value (empty -
-  # no schema targeting at all - and 'Quoted', a name requiring SQL
-  # identifier quoting) is exercised too, via `make test-schema-all`'s
-  # in-Makefile loop rather than a CI matrix dimension - a schema name is
+  # Fresh install, then the in-place extension update path, both across the
+  # PG matrix. The update leg CREATE EXTENSIONs at the oldest version we
+  # still ship a full install script for (0.9.6), then ALTER EXTENSION
+  # UPDATEs to current (no pg_upgrade, same PostgreSQL) and reruns the
+  # suite - a single job rather than a dedicated one, since a load mode is
   # just an input the same assertions run against, not a real environment
+  # difference (same reasoning as TEST_SCHEMA below), and the per-version
+  # container/checkout setup would otherwise be duplicated across two jobs
+  # with the same PG matrix. Every TEST_SCHEMA value (empty - no schema
+  # targeting at all - and 'Quoted', a name requiring SQL identifier
+  # quoting) is exercised too, via `make test-schema-all`'s in-Makefile
+  # loop rather than a CI matrix dimension - a schema name is just an
+  # input the same assertions run against, not a real environment
   # difference, so crossing it into the matrix would only multiply job
   # count for no added confidence (see the Makefile's TEST_SCHEMA_VALUES
-  # comment). Both legs pass against the SAME
+  # comment). Every leg passes against the SAME
   # test/expected/extension_tests.out (see test/README.md for how the
   # suite keeps its output schema-invariant).
   test:
@@ -41,29 +49,6 @@ jobs:
         uses: actions/checkout@v4
       - name: Test on PostgreSQL ${{ matrix.pg }}, across every TEST_SCHEMA value
         run: make test-schema-all
-
-  # Proves the in-place extension update path: CREATE EXTENSION at the
-  # oldest version we still ship a full install script for (0.9.6), then
-  # ALTER EXTENSION UPDATE (no pg_upgrade, same PostgreSQL), all within
-  # test/install/load.sql's own committed session (TEST_LOAD_SOURCE=update -
-  # see the Makefile) - then run the FULL suite against the updated
-  # database via the SAME expected output as a fresh install (see
-  # test/README.md for how the suite stays schema/load-mode invariant).
-  # No external script needed for this leg: unlike a real pg_upgrade
-  # (pg-upgrade-test), the update itself is just SQL, so test/install can
-  # do the whole thing inside one pg_regress invocation.
-  extension-update-test:
-    strategy:
-      matrix:
-        pg: [18, 17, 16, 15, 14, 13, 12, 11, 10]
-    name: ⬆️ Extension update test on PostgreSQL ${{ matrix.pg }}
-    runs-on: ubuntu-latest
-    container: pgxn/pgxn-tools
-    steps:
-      - name: Start PostgreSQL ${{ matrix.pg }}
-        run: pg-start ${{ matrix.pg }}
-      - name: Check out the repo
-        uses: actions/checkout@v4
       - name: Install count_nulls
         run: make install
       - name: Update 0.9.6 -> current and run the suite
