@@ -12,6 +12,10 @@
  * ncs() actually resolves to something real; a future TEST_SCHEMA switch
  * (see pgxntool/README.asc's U&U section) would let this assert an exact,
  * known location instead.
+ *
+ * SEE ALSO: teardown__search_path_unchanged in test/core/functions.sql,
+ * which guards against some OTHER test mutating search_path mid-suite (a
+ * different risk than this check).
  */
 CREATE FUNCTION _null_count_test.test__check_ncs
 () RETURNS SETOF text LANGUAGE plpgsql AS $body$
