@@ -73,19 +73,32 @@ BEGIN
         );
       END IF;
 
+      /*
+       * Explicit descriptions below (not pgTAP's auto-generated default,
+       * which schema-qualifies via ncs()): this suite may run against
+       * count_nulls installed in ANY schema (see TEST_SCHEMA in the
+       * Makefile), and the description text is exact-matched by pg_regress
+       * against a single committed expected-output file - it must stay
+       * IDENTICAL no matter which schema the extension actually landed in.
+       * ncs() itself is still used to locate and call the real function;
+       * only the visible description text drops it.
+       */
       RETURN NEXT function_returns(
         ncs(), f_name, f_args
         , 'int'::regtype::text -- Sanitize type name
+        , format('Function %s(%s) should return int', f_name, array_to_string(f_args, ','))
       );
 
       -- TODO: isnt_definer
       RETURN NEXT isnt_strict(
         ncs(), f_name, f_args
+        , format('Function %s(%s) should not be strict', f_name, array_to_string(f_args, ','))
       );
 
       RETURN NEXT volatility_is(
         ncs(), f_name, f_args
         , 'immutable'
+        , format('Function %s(%s) should be IMMUTABLE', f_name, array_to_string(f_args, ','))
       );
     END LOOP;
   END LOOP;
@@ -95,16 +108,19 @@ BEGIN
     RETURN NEXT function_returns(
       ncs(), f_name, f_args
       , 'trigger'
+      , format('Function %s() should return trigger', f_name)
     );
 
     -- TODO: isnt_definer
     RETURN NEXT isnt_strict(
       ncs(), f_name, f_args
+      , format('Function %s() should not be strict', f_name)
     );
 
     RETURN NEXT volatility_is(
       ncs(), f_name, f_args
       , 'immutable'
+      , format('Function %s() should be IMMUTABLE', f_name)
     );
   END LOOP;
 END
@@ -120,6 +136,13 @@ CREATE FUNCTION pg_temp.test_trigger_raw(
   , exec text
   , errmsg text
   , errdesc text
+  /*
+   * Schema-free stand-in for exec, used ONLY in the visible description
+   * below - exec itself (schema-qualified via ncs(), by callers) is what
+   * actually runs. Keeps this suite's output identical no matter which
+   * schema count_nulls is installed in (see TEST_SCHEMA).
+   */
+  , exec_desc text
 
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
 DECLARE
@@ -130,8 +153,15 @@ DECLARE
       , exec
     )
   ;
+  c_command_desc CONSTANT text :=
+    format( $$CREATE TRIGGER %s %s INSERT ON test_data FOR EACH ROW EXECUTE PROCEDURE %s$$
+      , trigger_name
+      , ba
+      , exec_desc
+    )
+  ;
 BEGIN
-  RETURN NEXT lives_ok( c_command, c_command );
+  RETURN NEXT lives_ok( c_command, c_command_desc );
   RETURN NEXT throws_ok(
     $$INSERT INTO test_data VALUES (1,1,NULL)$$
     , 'P0001'
@@ -166,6 +196,11 @@ BEGIN
         )
       , errmsg := coalesce( err, format( 'test_data must contain 1 %s fields', upper( replace( nn, '_', ' ' ) ) ) )
       , errdesc := 'Test ' || c_trigger_name
+      , exec_desc := format(
+          $$%s_count_trigger(1, %L)$$
+          , nn
+          , err
+        )
     )
   ;
 END
@@ -193,7 +228,7 @@ BEGIN
   RETURN NEXT bag_eq(
     format($$SELECT a, b, c, %1$I.null_count( a, b, c ), %1$I.not_null_count( a, b, c ) FROM test_data$$, ncs())
     , $$SELECT *, 3-null_count AS not_null_count FROM test_data$$
-    , format('Test %I.null_count(a, b, c)', ncs())
+    , 'Test null_count(a, b, c)'
   );
 
   -- Test JSON versions
@@ -201,12 +236,12 @@ BEGIN
   RETURN NEXT bag_eq(
     format($$SELECT a, b, c, %1$I.null_count( row_to_json( row(a, b, c) ) ), %1$I.not_null_count( row_to_json( row(a, b, c) ) ) FROM test_data$$, ncs())
     , $$SELECT *, 3-null_count AS not_null_count FROM test_data$$
-    , format('Test %I.null_count(json)', ncs())
+    , 'Test null_count(json)'
   );
   RETURN NEXT bag_eq(
     format($$SELECT a, b, c, %1$I.null_count( row_to_json( row(a, b, c) )::jsonb ), %1$I.not_null_count( row_to_json( row(a, b, c) )::jsonb ) FROM test_data$$, ncs())
     , $$SELECT *, 3-null_count AS not_null_count FROM test_data$$
-    , format('Test %I.null_count(jsonb)', ncs())
+    , 'Test null_count(jsonb)'
   );
 
   -- Doesn't work for array types
@@ -228,10 +263,13 @@ BEGIN
               WHEN args = '' AND not_ = ''      THEN $$test trigger usage: number of NULL columns[, error message]$$
               ELSE 'test trigger: first argument must not be null'
             END
-          , 'Test ' || trig
+          , 'Test ' || trig_desc
+          , trig_desc
         )
       FROM (
-        SELECT *, format( '%I.%snull_count_trigger( %s )', ncs(), not_, args ) AS trig
+        SELECT *
+          , format( '%I.%snull_count_trigger( %s )', ncs(), not_, args ) AS trig
+          , format( '%snull_count_trigger( %s )', not_, args ) AS trig_desc
           FROM
             unnest( array['not_', ''] ) not_
             , unnest( array['NULL', ''] ) args
