@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+#
+# Exercise the count_nulls test suite against a REAL database whose extension
+# was installed/upgraded OUTSIDE this pg_regress invocation ("existing" mode)
+# - specifically, a real binary pg_upgrade run. Unlike an in-place ALTER
+# EXTENSION UPDATE (which test/install/load.sql's own 'update' mode handles
+# entirely by itself - see `make test-update`), a real pg_upgrade is an
+# external binary process pg_regress can't invoke itself, so THAT leg needs
+# an external script to drive it. This is a smaller script than it might look
+# like it needs to be: only the pieces that genuinely can't live inside a
+# single pg_regress invocation are here.
+#
+# The pg-upgrade-test CI job repeats the same sequence:
+#
+#   prepare-old (install + plant guard) -> update (ALTER EXTENSION UPDATE,
+#   on the OLD cluster, before pg_upgrade) -> [real pg_upgrade binary, in
+#   CI] -> run-suite (assert + run existing-mode)
+#
+# so it lives here once instead of being duplicated as inline YAML. update
+# runs BEFORE the binary pg_upgrade, not after: the point of this job is
+# proving pg_upgrade correctly migrates the objects count_nulls' CURRENT
+# code creates, so pg_upgrade needs to run against already-current objects,
+# not ones still frozen at the old INSTALL_VERSION.
+#
+# Not CI-only: a developer can run any subcommand locally against a scratch
+# database. Modeled on Postgres-Extensions/cat_tools's bin/test_existing.
+# Two differences from that script: count_nulls ships no
+# SELECT-*-over-catalog views, so it has no known pg_upgrade-unsafe old
+# version to bridge past before running pg_upgrade; and its own suite has a
+# legitimate (though harmless - always rolled back) DROP EXTENSION test, so
+# here the guard is dropped before run-suite instead of surviving through it.
+#
+# USAGE: bin/test_existing <subcommand> [args]
+#
+#   prepare-old DB SCHEMA INSTALL_VERSION
+#       Old-cluster prep for pg-upgrade-test: create DB + extension at
+#       INSTALL_VERSION in SCHEMA, then plant + prove the dependency guard.
+#
+#   update DB [TO_VERSION]
+#       ALTER EXTENSION count_nulls UPDATE [TO 'TO_VERSION'] (empty => current).
+#
+#   run-suite DB SCHEMA
+#       Assert the current version, re-prove the guard, drop it, then run the
+#       suite in existing mode (extension must be at the current version).
+#
+# Run `bin/test_existing` with no subcommand to print usage.
+#
+# Why the dependency guard: "existing" mode must run the suite against the
+# ACTUAL upgraded objects. If anything silently dropped + reinstalled the
+# extension (a stray CASCADE, a logic bug, a bad CI step), the suite would
+# test a FRESH install and hide a regression. We plant an object that HARD-
+# references a count_nulls member so a non-CASCADE DROP EXTENSION fails, and
+# actively PROVE that (see bin/test_existing.sql/assert_guard.sql): if the
+# drop unexpectedly succeeds, this script fails CI rather than silently
+# passing.
+set -euo pipefail
+
+# Run from the repository root (where `make` works and test paths resolve),
+# regardless of the caller's cwd. bin/ sits directly under the repo root, so
+# its parent is the root. readlink -f resolves any path the script was
+# invoked through.
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+# ---------------------------------------------------------------------------
+# psql helpers
+# ---------------------------------------------------------------------------
+
+psql_value() {
+  local db=$1 sql=$2
+  psql -d "$db" -tAc "$sql"
+}
+
+psql_do() {
+  local db=$1
+  shift
+  psql -d "$db" -v ON_ERROR_STOP=1 "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Version / guard helpers
+# ---------------------------------------------------------------------------
+
+current_version() {
+  # EXTENSION_count_nulls_VERSION (the .control file's default_version), NOT
+  # PGXNVERSION (the PGXN distribution version, from META.in.json) - a
+  # version-less CREATE EXTENSION/ALTER EXTENSION UPDATE installs whatever
+  # the control file's default_version says, and count_nulls' is currently
+  # the 'stable' pseudo-version, not the last real release. Using PGXNVERSION
+  # here would compare an installed 'stable' against an expected real version
+  # number and always report a mismatch. See RELEASE.md's note on
+  # distribution vs. extension versions; the pg-tle-test CI job makes the
+  # same distinction for the same reason.
+  make -s print-EXTENSION_count_nulls_VERSION 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p'
+}
+
+installed_version() {
+  psql_value "$1" \
+    "SELECT extversion FROM pg_extension WHERE extname = 'count_nulls'"
+}
+
+# Plant the guard and PROVE it blocks a non-CASCADE drop. Call right after
+# CREATE EXTENSION (and before any update/upgrade) so it persists through them.
+plant_guard() {
+  local db=$1 schema=$2
+  psql -d "$db" -v ON_ERROR_STOP=1 -v schema="$schema" -f bin/test_existing.sql/plant_guard.sql
+  assert_drop_blocked "$db"
+}
+
+# The core safeguard self-check: a non-CASCADE DROP EXTENSION MUST fail while
+# the guard exists. assert_guard.sql fails loudly (nonzero exit) if the drop
+# unexpectedly succeeds, or if the extension/guard are missing afterward.
+assert_drop_blocked() {
+  local db=$1
+  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing.sql/assert_guard.sql
+  echo "OK: non-CASCADE DROP EXTENSION is blocked in '$db' (dependency guard effective)"
+}
+
+drop_guard() {
+  local db=$1
+  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing.sql/drop_guard.sql
+}
+
+assert_version() {
+  local db=$1 expected=$2 installed
+  [ "$expected" = current ] && expected=$(current_version)
+  installed=$(installed_version "$db")
+  echo "version check '$db': installed='$installed' expected='$expected'"
+  if [ -z "$installed" ] || [ -z "$expected" ] || [ "$installed" != "$expected" ]; then
+    echo "FAIL: count_nulls in '$db' is '$installed', expected '$expected'" >&2
+    exit 1
+  fi
+}
+
+update_ext() {
+  local db=$1 to=${2:-}
+  # Prepend "TO " only when a target version is given, so a single statement
+  # covers both cases (empty $to => bare "ALTER EXTENSION ... UPDATE" to
+  # current). Use `if`, not `&&`: a false test under `set -e` would abort.
+  if [ -n "$to" ]; then to="TO '$to'"; fi
+  psql_do "$db" -c "ALTER EXTENSION count_nulls UPDATE $to"
+}
+
+# CREATE EXTENSION count_nulls at VERSION, targeting SCHEMA - unless SCHEMA
+# is empty, in which case it's created untouched, wherever the session's
+# own default search_path resolves (ordinarily 'public'). A quoted empty
+# identifier ("") is a real Postgres syntax error, so this can't just always
+# emit `CREATE SCHEMA IF NOT EXISTS "$schema"` - the empty case has to skip
+# that entirely, mirroring test/install/load.sql's own :count_nulls_has_schema
+# branch.
+create_extension_in_schema() {
+  local db=$1 schema=$2 version=$3 sql=""
+  if [ -n "$schema" ]; then
+    sql="CREATE SCHEMA IF NOT EXISTS \"$schema\"; SET search_path = \"$schema\"; "
+  fi
+  psql_do "$db" -c "${sql}CREATE EXTENSION count_nulls VERSION '$version'"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand implementations
+# ---------------------------------------------------------------------------
+
+# prepare-old DB SCHEMA INSTALL_VERSION
+#   Old-cluster preparation for pg-upgrade-test: create the database and the
+#   extension at INSTALL_VERSION in SCHEMA, then plant + prove the guard. No
+#   bridge-update step first: count_nulls ships no SELECT-*-over-catalog
+#   views, so it has no known pg_upgrade-unsafe old version to bridge past.
+prepare_old() {
+  local db=$1 schema=$2 install=$3
+  createdb "$db"
+  create_extension_in_schema "$db" "$schema" "$install"
+  plant_guard "$db" "$schema"
+}
+
+# Run the pgTAP suite against an already-populated database in existing mode.
+# Verifies count_nulls is at the current version, re-proves the guard still
+# blocks a drop (i.e. it survived the update/upgrade), drops the guard (see
+# the file header for why - count_nulls's own suite legitimately drops the
+# extension, harmlessly, inside a transaction that's always rolled back),
+# then runs the suite via --use-existing so pg_regress does NOT drop/recreate
+# the database.
+run_suite() {
+  local db=$1 schema=$2
+  assert_version "$db" current
+  assert_drop_blocked "$db"
+  drop_guard "$db"
+  # In existing mode pg_regress runs against $db via --use-existing and must
+  # NOT create/drop its own database. `make test` (not just `make
+  # verify-results`) is a real gate as of pgxntool 2.3.0 - it now exits
+  # non-zero on regression failures instead of always exiting 0 regardless
+  # of pg_regress's result (see this repo's pgxntool 2.3.0 bump).
+  make test TEST_LOAD_SOURCE=existing TEST_SCHEMA="$schema" CONTRIB_TESTDB="$db" EXTRA_REGRESS_OPTS=--use-existing
+}
+
+usage() {
+  echo "usage: bin/test_existing <subcommand> [args]" >&2
+  echo "  prepare-old DB SCHEMA INSTALL_VERSION" >&2
+  echo "  update DB [TO_VERSION]" >&2
+  echo "  run-suite DB SCHEMA" >&2
+  exit 2
+}
+
+# Explicit subcommand dispatch on $1. Defined first for readability; INVOKED
+# at the very bottom, after every helper it calls is defined (bash resolves
+# calls at runtime, so main() appearing first is fine).
+main() {
+  local cmd=${1:-}
+  shift || true
+  case "$cmd" in
+    prepare-old)     prepare_old "$@" ;;
+    update)          update_ext "$@" ;;
+    run-suite)       run_suite "$@" ;;
+    *)               usage ;;
+  esac
+}
+
+main "$@"
