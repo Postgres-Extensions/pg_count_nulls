@@ -70,7 +70,9 @@ CREATE SCHEMA IF NOT EXISTS :"schema";
  *
  * Read without missing_ok, same reasoning as count_nulls.test_schema above.
  */
-SELECT current_setting('count_nulls.test_load_mode') AS count_nulls_test_load_mode
+SELECT current_setting('count_nulls.test_load_mode')              AS count_nulls_test_load_mode
+     , current_setting('count_nulls.test_load_mode') = 'update'   AS count_nulls_update_mode
+     , current_setting('count_nulls.test_load_mode') = 'existing' AS count_nulls_existing_mode
 \gset
 
 DO $$
@@ -83,11 +85,6 @@ BEGIN
   END IF;
 END
 $$;
-
-SELECT :'count_nulls_test_load_mode' = 'update'   AS count_nulls_update_mode
-\gset
-SELECT :'count_nulls_test_load_mode' = 'existing' AS count_nulls_existing_mode
-\gset
 
 \if :count_nulls_existing_mode
 /*
