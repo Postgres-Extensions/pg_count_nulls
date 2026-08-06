@@ -23,6 +23,15 @@ include lint.mk
 # to lowercase), to exercise the suite's %I schema-qualification rather than
 # just its literal test data. Locally: `make test TEST_SCHEMA=Quoted`.
 #
+# Installing into two schemas only proves that %I-qualification works if the
+# test session's search_path never includes count_nulls' own schema in at
+# least one of those legs - otherwise an extension full of unqualified,
+# resolve-by-accident references would pass every leg too (see
+# test/core/functions.sql's header and test__check_ncs in
+# test/sql/extension_tests.sql, which is what actually checks this). This
+# suite excludes it in BOTH legs, which is stronger than the minimum needed -
+# not a requirement in itself.
+#
 # Propagated as a GUC (count_nulls.test_schema), exported unconditionally via
 # PGOPTIONS - pg_regress doesn't forward make variables, but the psql
 # processes it spawns inherit the environment. Empty is a valid, deliberate
@@ -33,7 +42,9 @@ export PGOPTIONS := $(PGOPTIONS) -c count_nulls.test_schema=$(TEST_SCHEMA)
 
 # Every TEST_SCHEMA value the suite is tested against. A single source so
 # test-schema-all and CI (once collapsed - see the "why not a CI matrix"
-# note below) can't silently drift onto different sets.
+# note below) can't silently drift onto different sets. See the TEST_SCHEMA
+# comment above for why exercising more than one value here is meaningful
+# (search_path exclusion), not just "install into schema A vs schema B".
 TEST_SCHEMA_VALUES = "" Quoted
 
 # TEST_SCHEMA is deliberately NOT a CI matrix dimension: unlike PostgreSQL

@@ -14,6 +14,16 @@
  * own bare connection, with no schema targeting - see phase 1's commit
  * message), which is NOT on search_path here either.
  *
+ * Excluding it from BOTH legs is stronger than strictly required: the thing
+ * that actually makes a multi-schema matrix meaningful is that AT LEAST ONE
+ * tested schema is verifiably off search_path (otherwise installing into two
+ * schemas that both happen to stay reachable would let an unqualified,
+ * resolve-by-accident reference pass every leg without ever being caught).
+ * Keeping both legs off search_path is a simpler, deliberately stricter
+ * choice here, not evidence that every leg must be - a hypothetical future
+ * leg that left its schema on search_path wouldn't invalidate this design,
+ * as long as at least one other leg still excludes it.
+ *
  * schema_hint reads the count_nulls.test_schema GUC directly (the Makefile
  * exports it via PGOPTIONS for the whole run - see test/install/load.sql,
  * which installs into it) rather than via a psql variable relayed through

@@ -48,6 +48,20 @@ installs count_nulls into:
 Both legs run in CI - genuinely different code paths, not one a redundant
 special case of the other.
 
+**Why two legs prove anything.** Installing into two different schemas by
+itself doesn't test whether count_nulls' own SQL correctly schema-qualifies
+its internal references - if BOTH schemas happened to stay on the test
+session's search_path (e.g. because the empty leg's `public` and the
+`TEST_SCHEMA` leg's target were both reachable), an extension full of
+unqualified, resolve-by-accident references would pass every leg too. What
+actually matters is that at least ONE leg's install schema is verifiably
+absent from search_path, so that leg's assertions only pass if `%I`-qualified
+references are genuinely correct - checked by `test__check_ncs` in
+`sql/extension_tests.sql`. This suite goes further and excludes the schema
+from search_path in *every* leg, via the fixed `SET SEARCH_PATH` in
+`core/functions.sql` - a stronger, deliberate choice, not the minimum
+required.
+
 **Assertion descriptions deliberately never embed the schema name.**
 `core/functions.sql`'s assertions build the SQL they *execute* via `%I`
 qualification (through `ncs()`, so they're always correct no matter which
