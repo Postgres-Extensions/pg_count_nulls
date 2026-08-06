@@ -33,7 +33,7 @@
  * every test__* function with no arguments, so it always gets this default.
  */
 CREATE FUNCTION _null_count_test.test__check_ncs(
-  schema_hint name DEFAULT NULLIF(current_setting('count_nulls.test_schema'), '')::name
+  schema_hint name DEFAULT nullif(current_setting('count_nulls.test_schema'), '')::name
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
 DECLARE
     /*
@@ -51,18 +51,18 @@ DECLARE
      * which guards against some OTHER test mutating search_path mid-suite (a
      * different risk than this check).
      */
-    s CONSTANT name = COALESCE(schema_hint, ncs());
+    s CONSTANT name = coalesce(schema_hint, ncs());
 BEGIN
     RETURN NEXT is(
         current_schemas(true) @> array[s]
         , false
-        , 'count_nulls'' schema should not be in search path'
+        , $$count_nulls' schema should not be in search path$$
     );
 END
 $body$;
 
 CREATE FUNCTION _null_count_test.test__shutdown__drop_all(
-  schema_hint name DEFAULT NULLIF(current_setting('count_nulls.test_schema'), '')::name
+  schema_hint name DEFAULT nullif(current_setting('count_nulls.test_schema'), '')::name
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
 BEGIN
     RETURN NEXT lives_ok(
