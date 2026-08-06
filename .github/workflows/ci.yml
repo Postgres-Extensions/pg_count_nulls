@@ -34,6 +34,26 @@
 # doc-only pushes, and also derives the shared PostgreSQL-major list those
 # jobs consume from a single set of constants. `all-checks-passed` is the
 # single stable required-status-check name.
+#
+# Draft PRs get a further reduction, independent of `changes`/docs_only,
+# aimed at cutting shared-runner load while a PR is still being iterated on
+# (this repo's org-wide Actions queue backs up easily): `lint` always runs
+# in full; `test`'s matrix drops to just the newest supported PostgreSQL
+# major (see its own comment) instead of running full or being skipped
+# outright, since it's cheap per-leg and a draft author still wants signal
+# on every push; every other heavy job (`pg-tle-test`, and `pg-upgrade-test`
+# etc. from later phases) is skipped entirely via an added
+# `&& github.event.pull_request.draft != true` on its existing `if:`. None
+# of this applies to a `push` event (e.g. the post-merge run on master) or
+# a non-draft PR, both of which always run the full suite exactly as
+# before. `github.event.pull_request.draft` reflects the PR's CURRENT
+# draft status at the time each event fires, so once a PR is marked
+# ready-for-review, its next actual trigger (a `synchronize` push - this
+# workflow's `pull_request:` has no `types:` override, so it only runs on
+# the GitHub default of opened/synchronize/reopened, NOT the
+# `ready_for_review` action by itself) correctly sees draft=false and runs
+# the full suite; the reduced draft-time result on prior commits is not
+# retroactively re-run.
 # ===========================================================================
 name: CI
 on:
@@ -52,13 +72,18 @@ jobs:
   # major list the test job consumes: every job that cares which majors are
   # supported reads the SAME list, so they can't silently drift onto
   # different sets, and adding a new major is a one-line change here
-  # instead of an edit in several jobs.
+  # instead of an edit in several jobs. `newest_pg` is the same NEWEST
+  # constant emitted again as a bare scalar (not wrapped in the JSON-array
+  # `supported_pg`), consumed only by the `test` job's draft-PR matrix
+  # reduction (see the top-of-file comment and that job's own comment) - so
+  # NEWEST still only needs to change in one place.
   changes:
     name: 🔍 Detect docs-only changes & derive PG matrix
     runs-on: ubuntu-latest
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
       supported_pg: ${{ steps.pg.outputs.supported_pg }}
+      newest_pg: ${{ steps.pg.outputs.newest_pg }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -150,6 +175,12 @@ jobs:
 
           echo "supported_pg=$(json $supported)" >> "$GITHUB_OUTPUT"
 
+          # Also emitted as a bare scalar (not a JSON array) so the `test`
+          # job's draft-PR matrix reduction (see its own comment) can build a
+          # single-element list from it via fromJSON(format(...)) without a
+          # second hardcoded "18" anywhere in this file.
+          echo "newest_pg=$NEWEST" >> "$GITHUB_OUTPUT"
+
   lint:
     name: 🧹 SQL lint
     runs-on: ubuntu-latest
@@ -185,8 +216,14 @@ jobs:
     if: needs.changes.outputs.docs_only != 'true'
     strategy:
       matrix:
-        # From the single source in the changes job.
-        pg: ${{ fromJSON(needs.changes.outputs.supported_pg) }}
+        # From the single source in the changes job. On a draft PR, reduced
+        # to just the newest supported major (never skipped outright, unlike
+        # the other heavy jobs below - this is the one signal a draft author
+        # still wants on every push): `github.event.pull_request.draft` is
+        # null/falsy for a push event (e.g. the post-merge run on master), so
+        # this expression falls through to the full list there with no extra
+        # guard needed.
+        pg: ${{ github.event.pull_request.draft && fromJSON(format('[{0}]', needs.changes.outputs.newest_pg)) || fromJSON(needs.changes.outputs.supported_pg) }}
     name: 🐘 PostgreSQL ${{ matrix.pg }}
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
@@ -204,7 +241,10 @@ jobs:
 
   pg-tle-test:
     needs: [changes]
-    if: needs.changes.outputs.docs_only != 'true'
+    # Skipped outright (not just matrix-reduced like `test` above) on a
+    # draft PR: this is a heavy job, and a draft author doesn't need the
+    # pg_tle deployment path re-proven on every push while still iterating.
+    if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
     strategy:
       matrix:
         # Intersection of count_nulls' own supported range (10-18, see the
