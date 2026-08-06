@@ -27,12 +27,88 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  claude-review:
-    # jnasbyupgrade's own PRs only, and skip drafts (don't spend API/CI on
-    # unfinished PRs).
+  # Cheap gate that skips the paid review when this push's PATCH is
+  # identical to the last one reviewed for this PR - a pure gh-stack rebase
+  # cascade changes only the base commit, not the PR's own diff, so there's
+  # nothing new to review. Restricted to `synchronize`: `opened`/`reopened`/
+  # `ready_for_review` always run the review regardless of patch-id, since
+  # draft->ready is itself a meaningful trigger even if nothing about the
+  # diff needed to change, and comparing against a stale cached patch-id
+  # there would otherwise wrongly suppress it. Runs before the (slow) "wait
+  # for CI" gate in claude-review below, so a rebase-only push never enters
+  # that wait at all.
+  content-check:
+    runs-on: ubuntu-latest
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.login == 'jnasbyupgrade'
+    outputs:
+      content_changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      # Default (non-overridden) checkout for a pull_request_target event
+      # is the BASE branch - deliberate here: bin/patch_id_hash must be on
+      # disk to run, and an older PR predating this script (checked out at
+      # its own head, as claude-review's later step does) wouldn't have it.
+      # The script itself diffs base...head via git plumbing on commit
+      # objects, not the working tree, so which ref is checked out doesn't
+      # affect the computed hash - only whether the SCRIPT is present.
+      - name: Check out the base branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the PR head commit
+        # fetch-depth 0 above pulls this repo's full history but not a
+        # fork's (or an as-yet-unmerged) ref - fetch head.sha explicitly so
+        # it's reachable for the diff below.
+        run: git fetch origin ${{ github.event.pull_request.head.sha }}
+
+      - name: Restore this PR's previously observed content patch-id
+        id: patchid-restore
+        if: github.event.action == 'synchronize'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/prev_patch_id
+          # A key guaranteed not to already exist, so this always falls
+          # through to restore-keys (prefix match, picks the MOST RECENT
+          # save) instead of ever hitting its own key directly. Same cache
+          # namespace as ci.yml's `changes` job - both are answering the
+          # identical "did this PR's patch change" question, so whichever
+          # workflow runs first primes the cache for the other.
+          key: unused-${{ github.run_id }}
+          restore-keys: |
+            ci-patchid-pr-${{ github.event.pull_request.number }}-
+
+      - name: Compare against the last observed patch-id
+        id: diff
+        run: |
+          NEW=$(bin/patch_id_hash "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+          echo "content patch-id: $NEW"
+          if [ "${{ github.event.action }}" = "synchronize" ] && \
+             [ -f /tmp/prev_patch_id ] && \
+             [ "$(cat /tmp/prev_patch_id)" = "$NEW" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "$NEW" > /tmp/prev_patch_id
+
+      - name: Save this push's content patch-id for the next push to compare against
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/prev_patch_id
+          key: ci-patchid-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
+
+  claude-review:
+    needs: [content-check]
+    # jnasbyupgrade's own PRs only, skip drafts (don't spend API/CI on
+    # unfinished PRs), and skip a pure rebase-cascade push (see
+    # content-check above - nothing new to review).
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login == 'jnasbyupgrade' &&
+      needs.content-check.outputs.content_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

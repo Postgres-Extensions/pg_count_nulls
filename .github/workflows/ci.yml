@@ -62,19 +62,42 @@
 # in full; `test`'s matrix drops to just the newest supported PostgreSQL
 # major (see its own comment) instead of running full or being skipped
 # outright, since it's cheap per-leg and a draft author still wants signal
-# on every push; every other heavy job (`pg-tle-test`, and `pg-upgrade-test`
-# etc. from later phases) is skipped entirely via an added
-# `&& github.event.pull_request.draft != true` on its existing `if:`. None
-# of this applies to a `push` event (e.g. the post-merge run on master) or
-# a non-draft PR, both of which always run the full suite exactly as
-# before. `github.event.pull_request.draft` reflects the PR's CURRENT
-# draft status at the time each event fires, so once a PR is marked
-# ready-for-review, its next actual trigger (a `synchronize` push - this
-# workflow's `pull_request:` has no `types:` override, so it only runs on
-# the GitHub default of opened/synchronize/reopened, NOT the
-# `ready_for_review` action by itself) correctly sees draft=false and runs
-# the full suite; the reduced draft-time result on prior commits is not
-# retroactively re-run.
+# on every push; every other heavy job (`pg-tle-test`, `pg-upgrade-test`)
+# is skipped entirely via an added `&& github.event.pull_request.draft !=
+# true` on its existing `if:`. None of this applies to a `push` event (e.g.
+# the post-merge run on master) or a non-draft PR, both of which always run
+# the full suite exactly as before. `pull_request.types` below includes
+# `ready_for_review` specifically so marking a draft PR ready retriggers
+# immediately at full scope (draft is already false by the time that event
+# fires) instead of leaving the reduced draft-time result on the PR's last
+# commit as its current status until some later real push.
+#
+# CI PRIORITY: a `gh stack rebase` cascade pushes to every PR above the one
+# actually being changed, purely to move it onto a new base - the PR's own
+# diff (what it actually contributes) is unchanged. Running that at the
+# same priority as real new commits means a burst of cascade pushes can
+# crowd out the runner capacity a genuinely active push needs for fast
+# feedback. `changes` tells the two apart via a base-independent content
+# hash (bin/patch_id_hash, robust to rebase-induced context shifts - see
+# its own comment - persisted per-PR across pushes via actions/cache since
+# GitHub Actions has no other cross-run memory): a synchronize push whose
+# hash matches the last one observed for this PR is routed to a
+# LOW-priority lane (`ci-<job>-lowprio-<0..2>`, a small fixed set shared
+# across ALL PRs, capping rebase noise to at most 3 concurrent runs
+# repo-wide instead of letting it consume the account's whole concurrency
+# budget) rather than the per-PR high-priority lane real pushes use. It
+# still gets the FULL matrix either way, just possibly later - a rebase CAN
+# break something the diff itself didn't touch, and this repo won't merge
+# without a clean run regardless. `edited` is in `pull_request.types` so a
+# base retarget (the signal gh stack sends when this PR is promoted to the
+# bottom of its stack - the next one due to merge) can be caught by the
+# `escalate` step and bumped to an immediate high-priority run bypassing
+# whatever lane its last push landed in, UNLESS a full run already exists
+# for that exact head SHA (checked via the Checks API), in which case
+# there's nothing to gain by re-running it. `ready_for_review` gets the
+# same escalation unconditionally (no existing-run check): its prior run,
+# if any, was necessarily the reduced draft-time one above, which doesn't
+# count as "already had one".
 # ===========================================================================
 name: CI
 on:
@@ -82,6 +105,11 @@ on:
     branches:
       - master
   pull_request:
+    # Explicit (not the GitHub default of [opened, synchronize, reopened]):
+    # `ready_for_review` retriggers immediately when a draft PR is marked
+    # ready (see the top-of-file comment); `edited` catches a base retarget
+    # for the priority-escalation check in the `changes` job below.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
 jobs:
   # Cheap gate that lets the heavy jobs below skip themselves on commits that
   # touch only docs. Must run on every push/pull_request (no paths-ignore on
@@ -101,10 +129,16 @@ jobs:
   changes:
     name: 🔍 Detect docs-only changes & derive PG matrix
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read    # escalate step: has this SHA already got a full run?
+      actions: write  # escalate step: cancel a superseded low-priority run
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
       supported_pg: ${{ steps.pg.outputs.supported_pg }}
       newest_pg: ${{ steps.pg.outputs.newest_pg }}
+      priority: ${{ steps.diff.outputs.priority }}
+      lane: ${{ steps.lane.outputs.lane }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -112,16 +146,93 @@ jobs:
           # Full history needed so BASE and HEAD below are both reachable
           # for `git diff`.
           fetch-depth: 0
-      - name: Compute per-push changed files
+
+      - name: Base retargeted onto a new branch? Check whether this SHA already has a full run
+        # Fires only for `edited` WITH a base change - the gh-stack-promotion
+        # signal described at the top of this file. A plain title/body edit
+        # also fires `edited` but leaves `github.event.changes.base` absent,
+        # so it's excluded here and falls through to the diff step's
+        # edited-with-nothing-to-do branch below.
+        id: escalate
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.action == 'edited' &&
+          github.event.changes.base != null
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          existing=$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
+            --jq '[.check_runs[] | select(.name == "all-checks-passed")]' 2>/dev/null || echo '[]')
+          count=$(echo "$existing" | jq 'length')
+          if [ "$count" -gt 0 ]; then
+            echo "escalate=false" >> "$GITHUB_OUTPUT"
+            echo "SHA $SHA already has an all-checks-passed run - nothing to escalate"
+          else
+            echo "escalate=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cancel a superseded low-priority run for this SHA
+        # An escalation (base retarget, or draft->ready below) is about to
+        # trigger a fresh high-priority run for this exact SHA; a
+        # low-priority run still queued/running for the SAME SHA would just
+        # duplicate that work, so kill it first. ready_for_review always
+        # qualifies (unconditionally, no escalate check) since its prior
+        # run, if any, was necessarily the reduced draft-time one - never
+        # worth keeping once the PR is no longer a draft.
+        if: >-
+          steps.escalate.outputs.escalate == 'true' ||
+          github.event.action == 'ready_for_review'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api "repos/$REPO/actions/workflows/ci.yml/runs" --paginate \
+            --jq ".workflow_runs[] | select(.head_sha == \"$SHA\" and .status != \"completed\" and .id != ${{ github.run_id }}) | .id" \
+          | while read -r run_id; do
+              echo "Cancelling superseded run $run_id for $SHA"
+              gh api -X POST "repos/$REPO/actions/runs/$run_id/cancel" || true
+            done
+
+      - name: Restore this PR's previously observed content patch-id
+        id: patchid-restore
+        if: github.event_name == 'pull_request' && github.event.action != 'edited'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/prev_patch_id
+          # A key guaranteed not to already exist, so this always falls
+          # through to restore-keys (prefix match, picks the MOST RECENT
+          # save) instead of ever hitting its own key directly.
+          key: unused-${{ github.run_id }}
+          restore-keys: |
+            ci-patchid-pr-${{ github.event.pull_request.number }}-
+
+      - name: Compute per-push changed files, docs-only status, and CI priority
         id: diff
         run: |
-          # Fail safe to running the full matrix: default docs_only to false
-          # immediately, before anything below has a chance to compute or
-          # fail. Writing the same GITHUB_OUTPUT key twice is fine (the last
-          # write wins), so the only way this step ends with docs_only=true
-          # is by genuinely proving it further down - never by skipping past
-          # an edge case with a default.
+          # Fail safe to running the full matrix at high priority: default
+          # both immediately, before anything below has a chance to compute
+          # or fail. Writing the same GITHUB_OUTPUT key twice is fine (the
+          # last write wins), so the only way this step ends with
+          # docs_only=true or priority=low is by genuinely proving it
+          # further down - never by skipping past an edge case with a
+          # default.
           echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          echo "priority=high" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event.action }}" = "edited" ]; then
+            # Either a base retarget with nothing outstanding to run
+            # (escalate above said false - an all-checks-passed run already
+            # covers this SHA), or a plain title/description edit (no base
+            # change at all, so escalate didn't even run). Either way,
+            # there's no code to test right now.
+            if [ "${{ steps.escalate.outputs.escalate }}" != "true" ]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
 
           if [ "${{ github.event_name }}" = "pull_request" ] && \
              [ "${{ github.event.action }}" = "synchronize" ] && \
@@ -131,9 +242,9 @@ jobs:
             BASE="${{ github.event.before }}"
             HEAD="${{ github.event.after }}"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            # First run for this PR (opened/reopened/etc, or synchronize
-            # without a usable before): fall back to the whole base...head
-            # diff.
+            # First run for this PR (opened/reopened/ready_for_review/etc,
+            # or synchronize without a usable before): fall back to the
+            # whole base...head diff.
             BASE="${{ github.event.pull_request.base.sha }}"
             HEAD="${{ github.event.pull_request.head.sha }}"
           else
@@ -169,6 +280,42 @@ jobs:
           echo "changed files:"
           echo "$CHANGED"
           echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+
+          # Priority: a synchronize push whose own patch-id (the PR's
+          # actual contribution, independent of what it's based on) matches
+          # the last one observed for this PR is a pure gh-stack rebase
+          # cascade, not new work - safe to route to the low-priority lane.
+          # Real new commits, and this PR's first appearance (nothing to
+          # compare against yet), keep the high priority set above.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            NEW_PATCH_ID=$(bin/patch_id_hash "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+            echo "content patch-id: $NEW_PATCH_ID"
+            if [ "${{ github.event.action }}" = "synchronize" ] && \
+               [ -f /tmp/prev_patch_id ] && \
+               [ "$(cat /tmp/prev_patch_id)" = "$NEW_PATCH_ID" ]; then
+              echo "priority=low" >> "$GITHUB_OUTPUT"
+            fi
+            echo "$NEW_PATCH_ID" > /tmp/prev_patch_id
+          fi
+
+      - name: Save this push's content patch-id for the next push to compare against
+        if: github.event_name == 'pull_request' && github.event.action != 'edited'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/prev_patch_id
+          key: ci-patchid-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
+
+      - name: Assign a low-priority lane number
+        id: lane
+        # A fixed small number of shared lanes (not one lane per PR) bounds
+        # how much of the account's concurrent-runner budget rebase-cascade
+        # noise can ever occupy at once, so it can't crowd out real-work
+        # runs waiting for a runner - at the cost of not deduping a stale
+        # rebase run against a newer one for the SAME PR if they land in the
+        # same lane as an unrelated PR's job (acceptable: a stale completed
+        # check on an old SHA doesn't block merging the new SHA).
+        if: github.event_name == 'pull_request'
+        run: echo "lane=$(( ${{ github.event.pull_request.number }} % 3 ))" >> "$GITHUB_OUTPUT"
 
       - name: Derive the supported-PostgreSQL-major list
         id: pg
@@ -235,6 +382,18 @@ jobs:
   test:
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
+    # "ci-test-" prefix, distinct from pg-upgrade-test's/pg-tle-test's below:
+    # those run CONCURRENTLY with this job within the same PR's workflow run,
+    # so sharing a group name across job types would make them cancel/queue
+    # behind EACH OTHER instead of behind their own prior runs for this job.
+    # See the top-of-file CI PRIORITY comment for the low-priority lane
+    # scheme this implements.
+    concurrency:
+      group: >-
+        ${{ needs.changes.outputs.priority == 'low'
+          && format('ci-test-lowprio-{0}', needs.changes.outputs.lane)
+          || format('ci-test-{0}', github.event.pull_request.number || github.sha) }}
+      cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
     strategy:
       matrix:
         # From the single source in the changes job. On a draft PR, reduced
@@ -313,6 +472,13 @@ jobs:
     # this is a heavy job, and a draft author doesn't need a real binary
     # pg_upgrade re-proven on every push while still iterating.
     if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
+    # "ci-pgupgrade-" prefix - see the `test` job's concurrency comment above.
+    concurrency:
+      group: >-
+        ${{ needs.changes.outputs.priority == 'low'
+          && format('ci-pgupgrade-lowprio-{0}', needs.changes.outputs.lane)
+          || format('ci-pgupgrade-{0}', github.event.pull_request.number || github.sha) }}
+      cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
     strategy:
       matrix:
         old_pg: ["10", "12"]
@@ -435,6 +601,13 @@ jobs:
     # draft PR: this is a heavy job, and a draft author doesn't need the
     # pg_tle deployment path re-proven on every push while still iterating.
     if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
+    # "ci-pgtle-" prefix - see the `test` job's concurrency comment above.
+    concurrency:
+      group: >-
+        ${{ needs.changes.outputs.priority == 'low'
+          && format('ci-pgtle-lowprio-{0}', needs.changes.outputs.lane)
+          || format('ci-pgtle-{0}', github.event.pull_request.number || github.sha) }}
+      cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
     strategy:
       matrix:
         # Intersection of count_nulls' own supported range (10-18, see the
