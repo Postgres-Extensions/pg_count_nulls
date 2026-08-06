@@ -60,17 +60,16 @@ BEGIN
     );
 
     /*
-     * Only try to drop a schema when TEST_SCHEMA actually created one -
-     * when it's empty (schema_hint is NULL), count_nulls lives in 'public'
-     * (see test/install/load.sql), which this file has no business
-     * dropping.
+     * Plain cleanup, not a TAP assertion - dropping the schema TEST_SCHEMA
+     * created isn't something this suite is testing, just tearing down
+     * what it created. Same output in every TEST_SCHEMA leg: when
+     * schema_hint is NULL (empty leg), there's nothing to drop, so this is
+     * a no-op; if the DROP SCHEMA itself ever failed, the unhandled
+     * exception aborts the run loudly on its own - no lives_ok() needed
+     * for that.
      */
     IF schema_hint IS NOT NULL THEN
-        RETURN NEXT lives_ok(
-            format('DROP SCHEMA %I', schema_hint)
-        );
-    ELSE
-        RETURN NEXT skip('TEST_SCHEMA is empty - no dedicated schema to drop');
+        EXECUTE format('DROP SCHEMA %I', schema_hint);
     END IF;
 END
 $body$;

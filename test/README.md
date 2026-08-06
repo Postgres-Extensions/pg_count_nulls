@@ -57,15 +57,14 @@ descriptions, which otherwise embed the schema. This is what keeps
 `test/expected/extension_tests.out` a single file that both TEST_SCHEMA
 legs pass against, instead of needing one file per schema value.
 
-**One unavoidable, genuine exception**: `test__shutdown__drop_all` drops
-the schema TEST_SCHEMA created - a real, correct behavioral difference (not
-an artifact) between "there's a schema to clean up" (non-empty) and "there
-isn't" (empty, nothing to drop). `test/expected/extension_tests_1.out` is
-`pg_regress`'s native numbered-alternate mechanism for exactly this: the
-default file expects a `SKIP` there, `_1.out` (captured from a real
-`TEST_SCHEMA=Quoted` run, never hand-authored) expects the schema actually
-dropped. `pg_regress` tries the default first, then each numbered
-alternate in turn, and passes if any one matches.
+**`test__shutdown__drop_all`'s schema drop is plain cleanup, not a TAP
+assertion.** Dropping the schema TEST_SCHEMA created is a real, correct
+behavioral difference between "there's a schema to clean up" (non-empty)
+and "there isn't" (empty, nothing to drop) - but it's teardown, not
+something this suite is testing, so it's plain `EXECUTE`'d SQL with no
+`lives_ok()`/`skip()` branch. That keeps its TAP output identical in every
+TEST_SCHEMA leg (one `ok` row either way), so `test/expected/extension_tests.out`
+needs no numbered pg_regress alternate for this function.
 
 ## Regenerating expected output
 

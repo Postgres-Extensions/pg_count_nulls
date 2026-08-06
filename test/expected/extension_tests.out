@@ -80,7 +80,6 @@ ok 2 - _null_count_test.test__definition
 ok 3 - _null_count_test.test__functionality
 # Subtest: _null_count_test.test__shutdown__drop_all()
     ok 1
-    ok 2 # SKIP TEST_SCHEMA is empty - no dedicated schema to drop
-    1..2
+    1..1
 ok 4 - _null_count_test.test__shutdown__drop_all
 1..4
