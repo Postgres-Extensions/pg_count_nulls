@@ -279,7 +279,10 @@ jobs:
   # do so for both this job and the test job's update leg together).
   pg-upgrade-test:
     needs: [changes]
-    if: needs.changes.outputs.docs_only != 'true'
+    # Skipped outright (not just matrix-reduced like `test`) on a draft PR:
+    # this is a heavy job, and a draft author doesn't need a real binary
+    # pg_upgrade re-proven on every push while still iterating.
+    if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
     strategy:
       matrix:
         old_pg: ["10", "12"]
