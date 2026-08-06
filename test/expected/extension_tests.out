@@ -1,6 +1,6 @@
 \set ECHO none
 # Subtest: _null_count_test.test__check_ncs()
-    ok 1 - ncs() resolves to the schema count_nulls actually installed in
+    ok 1 - count_nulls' schema should not be in search path
     1..1
 ok 1 - _null_count_test.test__check_ncs
 # Subtest: _null_count_test.test__definition()

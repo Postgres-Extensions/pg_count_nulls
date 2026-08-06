@@ -17,6 +17,16 @@ jobs:
         # is what actually proves that works from a plain clone.
         run: make lint
 
+  # Fresh install, across the PG matrix. Every TEST_SCHEMA value (empty -
+  # no schema targeting at all - and 'Quoted', a name requiring SQL
+  # identifier quoting) is exercised too, via `make test-schema-all`'s
+  # in-Makefile loop rather than a CI matrix dimension - a schema name is
+  # just an input the same assertions run against, not a real environment
+  # difference, so crossing it into the matrix would only multiply job
+  # count for no added confidence (see the Makefile's TEST_SCHEMA_VALUES
+  # comment). Both legs pass against the SAME
+  # test/expected/extension_tests.out (see test/README.md for how the
+  # suite keeps its output schema-invariant).
   test:
     strategy:
       matrix:
@@ -29,8 +39,8 @@ jobs:
         run: pg-start ${{ matrix.pg }}
       - name: Check out the repo
         uses: actions/checkout@v4
-      - name: Test on PostgreSQL ${{ matrix.pg }}
-        run: pg-build-test
+      - name: Test on PostgreSQL ${{ matrix.pg }}, across every TEST_SCHEMA value
+        run: make test-schema-all
 
   pg-tle-test:
     strategy:
