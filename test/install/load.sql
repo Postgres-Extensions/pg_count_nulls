@@ -19,7 +19,11 @@
  * default search_path resolves (ordinarily 'public', since test/install
  * runs in its own bare connection, not the in-suite session pgTAP's
  * tap_setup.sql runs in - see phase 1's commit message for why that
- * matters). Non-empty explicitly creates and targets that schema.
+ * matters). Non-empty explicitly creates that schema and targets it via
+ * CREATE EXTENSION ... WITH SCHEMA below - this file never mutates its
+ * own search_path to do so (there'd be no point: WITH SCHEMA already
+ * targets the schema directly, and this is a one-shot bare connection
+ * with no later statement here that would need search_path set).
  *
  * Read without missing_ok: a genuinely unpropagated GUC must fail loudly,
  * not be indistinguishable from a deliberately empty one.
@@ -29,9 +33,21 @@ SELECT current_setting('count_nulls.test_schema') AS schema
 SELECT :'schema' <> '' AS count_nulls_has_schema
 \gset
 
+/*
+ * A reusable ' WITH SCHEMA "..."' fragment (leading space included, empty
+ * when count_nulls_has_schema is false) so CREATE EXTENSION below can just
+ * append :with_schema_clause without repeating the has-schema branch.
+ * format() is used unqualified: it's pg_catalog, always resolvable
+ * regardless of search_path.
+ */
+SELECT CASE WHEN :'count_nulls_has_schema'
+              THEN format(' WITH SCHEMA %I', :'schema')
+              ELSE ''
+       END AS with_schema_clause
+\gset
+
 \if :count_nulls_has_schema
 CREATE SCHEMA IF NOT EXISTS :"schema";
-SET search_path = :"schema";
 \endif
 
-CREATE EXTENSION count_nulls;
+CREATE EXTENSION count_nulls:with_schema_clause;

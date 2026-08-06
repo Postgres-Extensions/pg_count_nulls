@@ -41,9 +41,11 @@ installs count_nulls into:
   the session's own default search_path resolves. Since `install/load.sql`
   runs in its own bare connection (not the in-suite session pgTAP's own
   `tap_setup.sql` runs in), that's `public`.
-- Non-empty: explicitly `CREATE SCHEMA`/`SET search_path` to that name
-  first. `TEST_SCHEMA=Quoted` locally exercises a name requiring SQL
-  identifier quoting (mixed case - unquoted would fold to lowercase).
+- Non-empty: explicitly `CREATE SCHEMA`, then `CREATE EXTENSION ... WITH
+  SCHEMA` that name - `install/load.sql` never mutates its own
+  search_path to do this. `TEST_SCHEMA=Quoted` locally exercises a name
+  requiring SQL identifier quoting (mixed case - unquoted would fold to
+  lowercase).
 
 Both legs run in CI - genuinely different code paths, not one a redundant
 special case of the other.

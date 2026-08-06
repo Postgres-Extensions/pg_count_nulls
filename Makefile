@@ -18,10 +18,11 @@ include lint.mk
 #
 # Empty (the default): don't target any schema at all - count_nulls installs
 # wherever the session's own default search_path already resolves. Non-empty:
-# explicitly CREATE SCHEMA/SET search_path to that name first - including a
-# name that requires SQL identifier quoting (mixed case - unquoted would fold
-# to lowercase), to exercise the suite's %I schema-qualification rather than
-# just its literal test data. Locally: `make test TEST_SCHEMA=Quoted`.
+# explicitly CREATE SCHEMA, then CREATE EXTENSION ... WITH SCHEMA that name -
+# including a name that requires SQL identifier quoting (mixed case -
+# unquoted would fold to lowercase), to exercise the suite's %I
+# schema-qualification rather than just its literal test data. Locally:
+# `make test TEST_SCHEMA=Quoted`.
 #
 # Installing into two schemas only proves that %I-qualification works if the
 # test session's search_path never includes count_nulls' own schema in at
