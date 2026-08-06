@@ -22,6 +22,36 @@ $body$;
 */
 
 /*
+ * search_path guard: not a correctness assertion about count_nulls itself,
+ * but a guard against some OTHER test in this suite accidentally mutating
+ * search_path (e.g. via a stray SET) and leaking that mutation into every
+ * test that runs afterward. At this phase there's no TEST_SCHEMA concept
+ * yet, so the expected search_path for this test session is already a
+ * static, hardcoded literal - it's set two lines above (SET SEARCH_PATH =
+ * _null_count_test, tap) - so there's nothing to capture at runtime; just
+ * compare current_setting('search_path') against that known literal. A
+ * plain exception is enough here - pgTAP's runner reports any exception
+ * raised by a teardown__ function as "Test died: ..." against the test it
+ * ran after, no ok()/is() needed.
+ *
+ * SEE ALSO: test__check_ncs in test/sql/extension_tests.sql, which checks
+ * WHERE count_nulls actually landed (a different risk than this check).
+ */
+CREATE FUNCTION _null_count_test.teardown__search_path_unchanged
+() RETURNS SETOF text LANGUAGE plpgsql AS $body$
+DECLARE
+    v_current text := current_setting('search_path');
+BEGIN
+    IF v_current IS DISTINCT FROM '_null_count_test, tap' THEN
+        RAISE EXCEPTION
+            'search_path was left dirty by the preceding test: expected %, got %'
+            , '_null_count_test, tap', v_current;
+    END IF;
+    RETURN;
+END
+$body$;
+
+/*
  * function definition
  */
 CREATE FUNCTION test__definition
@@ -219,6 +249,12 @@ BEGIN
 END
 $body$;
 
-SET SEARCH_PATH = _null_count_test, tap, :schema;
+/*
+ * No explicit target schema to restore in phase 1 (count_nulls installs
+ * with no schema targeting at all - see test/install/load.sql), so this
+ * just re-states the same search_path already set at the top of this file.
+ * A later schema-targeting phase may need this to do more.
+ */
+SET SEARCH_PATH = _null_count_test, tap;
 
 -- vi: expandtab sw=2 ts=2
