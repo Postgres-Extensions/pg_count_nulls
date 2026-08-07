@@ -68,15 +68,16 @@ jobs:
   # would never report on doc-only pushes and get stuck Pending in branch
   # protection.
   #
-  # Also derives, from a SINGLE set of constants, the supported-PostgreSQL-
-  # major list the test job consumes: every job that cares which majors are
-  # supported reads the SAME list, so they can't silently drift onto
-  # different sets, and adding a new major is a one-line change here
-  # instead of an edit in several jobs. `newest_pg` is the same NEWEST
-  # constant emitted again as a bare scalar (not wrapped in the JSON-array
-  # `supported_pg`), consumed only by the `test` job's draft-PR matrix
-  # reduction (see the top-of-file comment and that job's own comment) - so
-  # NEWEST still only needs to change in one place.
+  # Also derives the supported-PostgreSQL-major list the test job consumes,
+  # from a single NEWEST constant plus META.json's own declared minimum
+  # (not a second hand-maintained floor constant): every job that cares
+  # which majors are supported reads the SAME list, so they can't silently
+  # drift onto different sets, and adding a new major is a one-line change
+  # here instead of an edit in several jobs. `newest_pg` is the same
+  # NEWEST constant emitted again as a bare scalar (not wrapped in the
+  # JSON-array `supported_pg`), consumed only by the `test` job's draft-PR
+  # matrix reduction (see the top-of-file comment and that job's own
+  # comment) - so NEWEST still only needs to change in one place.
   changes:
     name: 🔍 Detect docs-only changes & derive PG matrix
     runs-on: ubuntu-latest
@@ -158,22 +159,48 @@ jobs:
           # it cannot silently drift onto a different list. Adding a new
           # major is a one-line NEWEST bump here, not an edit in N places.
           #
-          # Only one floor is needed here: 0.9.6 (the oldest version
-          # count_nulls still ships a full install script for) is pure SQL
-          # over anyarray/json/jsonb with no catalog-version sensitivity, so
-          # it installs on every PostgreSQL major count_nulls supports -
-          # there's no separate legacy-only floor to carve out.
+          # The floor itself is NOT a second hardcoded constant here: it's
+          # read straight from META.json's own build prereq (see
+          # META.in.json's comment: "Depends on JSONB, created in 9.4"),
+          # which is the actual source of truth for count_nulls' minimum
+          # supported major. Hand-maintaining a duplicate floor constant in
+          # this workflow is exactly how it ended up testing down to 10 while
+          # META.json claimed 9.4 - 9.4/9.5/9.6 went untested for a while
+          # even though pg-start genuinely installs them fine on current
+          # Actions infra, and nobody noticed the gap.
           NEWEST=18
-          FLOOR=10
 
-          supported=$(seq "$NEWEST" -1 "$FLOOR")
+          DECLARED_FLOOR=$(jq -r '.prereqs.build.requires.PostgreSQL' META.json)  # e.g. "9.4.0"
+          FLOOR_MAJOR=$(echo "$DECLARED_FLOOR" | cut -d. -f1)
+          if [ "$FLOOR_MAJOR" -lt 10 ]; then
+            # PostgreSQL's pre-10 versioning used X.Y as the major identifier
+            # (10+ switched to a single integer) - e.g. "9.4.0" -> major
+            # "9.4", not "9".
+            FLOOR=$(echo "$DECLARED_FLOOR" | cut -d. -f1,2)
+          else
+            FLOOR="$FLOOR_MAJOR"
+          fi
 
-          # Emit a JSON array from a list of ints, for the job matrices to
-          # consume with fromJSON (GitHub evaluates a literal dollar-brace
-          # expression even inside a run block, so none is written here).
-          json() { printf '%s\n' "$@" | paste -sd, - | sed 's/^/[/; s/$/]/'; }
+          # A sub-10 floor needs two `seq` runs stitched together: one for
+          # the integer majors (10..NEWEST) and one for the X.Y majors
+          # (9.FLOOR_MINOR..9.6, since 9.6 was the last 9.x release).
+          if [[ "$FLOOR" == 9.* ]]; then
+            FLOOR_MINOR=$(echo "$FLOOR" | cut -d. -f2)
+            supported="$(seq "$NEWEST" -1 10) $(seq 6 -1 "$FLOOR_MINOR" | sed 's/^/9./')"
+          else
+            supported=$(seq "$NEWEST" -1 "$FLOOR")
+          fi
 
-          echo "supported_pg=$(json $supported)" >> "$GITHUB_OUTPUT"
+          # Emit a JSON array of STRINGS, not bare numbers - "9.4" isn't a
+          # valid bare integer token, and keeping every leg (10+ and 9.x
+          # alike) as a string keeps matrix.pg comparisons/interpolations
+          # consistent regardless of which leg they're in. $supported is
+          # deliberately unquoted below: it word-splits (on both the spaces
+          # AND the newlines `seq`/the concatenation above produce) into
+          # individual version tokens for printf to repeat over.
+          json() { printf '"%s",' $supported | sed 's/,$//; s/^/[/; s/$/]/'; }
+
+          echo "supported_pg=$(json)" >> "$GITHUB_OUTPUT"
 
           # Also emitted as a bare scalar (not a JSON array) so the `test`
           # job's draft-PR matrix reduction (see its own comment) can build a
