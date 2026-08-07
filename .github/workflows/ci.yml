@@ -35,12 +35,9 @@
 #                              through AWS pg_tle's database-backed catalog
 #                              instead of a filesystem .control file.
 #
-# count_nulls always installs into its own freshly, randomly generated
-# schema (a name that always requires SQL identifier quoting - see
-# test/install/load.sql), so every run exercises the suite's %I
-# schema-qualification, not just its literal test data. test/expected/
-# extension_tests.out stays schema-invariant regardless of the actual
-# generated name (see test/README.md for how).
+# During testing we always install into a freshly, randomly generated
+# schema (see test/install/load.sql; test/README.md covers how
+# test/expected/extension_tests.out stays schema-invariant).
 #
 # `changes` is a cheap gate that lets the heavy jobs above skip themselves on
 # doc-only pushes, and also derives the shared PostgreSQL-major list those
