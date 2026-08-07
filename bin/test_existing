@@ -142,14 +142,12 @@ update_ext() {
 }
 
 # CREATE EXTENSION count_nulls at VERSION, into a freshly, randomly
-# generated schema - the same cleanup-before-create + random-name pattern
-# test/install/load.sql uses for its own installs (see that file for the
-# full rationale). Needs multiple statements including a \gset, so this
-# runs as a proper -f script file rather than being inlined into -c, same
-# convention plant_guard()/drop_guard() already use.
+# generated schema - shared with test/install/load.sql's own fresh/update
+# installs via test/helpers/create_test_schema.sql (see that file for the
+# full rationale).
 create_extension_in_schema() {
   local db=$1 version=$2
-  psql -d "$db" -v ON_ERROR_STOP=1 -v version="$version" -f bin/test_existing.sql/create_extension.sql
+  psql -d "$db" -v ON_ERROR_STOP=1 -v version="$version" -f test/helpers/create_test_schema.sql
 }
 
 # ---------------------------------------------------------------------------
