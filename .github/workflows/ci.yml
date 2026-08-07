@@ -18,19 +18,17 @@
 #                              no added confidence.
 #   pg-upgrade-test         -- BINARY pg_upgrade: install 0.9.6 on an OLD
 #                              PostgreSQL major, then binary-upgrade the
-#                              cluster to a NEWER major. The two legs of
-#                              this job's small old_pg/new_pg matrix
-#                              deliberately update the extension to current
-#                              on OPPOSITE SIDES of that binary upgrade: one
-#                              leg proves pg_upgrade correctly migrates the
-#                              objects the extension's CURRENT code creates
-#                              TODAY, the other proves it correctly
-#                              preserves objects still frozen at the OLDEST
-#                              supported version at the moment of the
-#                              upgrade (a real user scenario) - see the
-#                              job's own comment for which leg does which
-#                              and why. A smaller old_pg/new_pg matrix (not
-#                              the full PG matrix - by far the most
+#                              cluster to a NEWER major. Its old_pg=10 leg
+#                              additionally compares BOTH update-vs-
+#                              pg_upgrade orderings a real user could hit,
+#                              via twin databases migrated by the SAME
+#                              binary pg_upgrade call; old_pg=12 is a
+#                              second, unrelated old-PG-floor data point
+#                              using the simpler single-database, single-
+#                              ordering design - see the job's own comment
+#                              for why the ordering comparison only needs
+#                              one floor. A smaller old_pg/new_pg matrix
+#                              (not the full PG matrix - by far the most
 #                              expensive job here, installing two full
 #                              PostgreSQL majors and running the real
 #                              pg_upgrade binary per leg).
@@ -290,35 +288,53 @@ jobs:
   # cluster, then runs the suite against the REAL migrated objects in
   # existing mode.
   #
-  # The two legs of this job's small old_pg/new_pg matrix deliberately
-  # update the extension to CURRENT on OPPOSITE SIDES of the binary
-  # pg_upgrade (see the `if: matrix.old_pg == ...` guards on the two
-  # "Update to current..." steps below) - same total CI cost, but between
-  # them the two legs now cover both orderings a real user could hit:
+  # This job's small old_pg/new_pg matrix tests two INDEPENDENT axes, kept
+  # deliberately separate rather than crossed into their own matrix
+  # dimension (which would double this already-expensive job's cost for no
+  # added confidence):
   #
-  #   old_pg=12 -- update BEFORE pg_upgrade (on the OLD cluster): proves
-  #                pg_upgrade correctly migrates the objects count_nulls'
-  #                CURRENT code actually creates - migrating 0.9.6's
-  #                objects and updating afterward would instead test
-  #                whether pg_upgrade can migrate a legacy structure frozen
-  #                in the past, which isn't actionable (that version
-  #                already shipped; nothing to fix if it turned out
-  #                fragile).
-  #   old_pg=10 -- update AFTER pg_upgrade (on the NEW cluster): proves
-  #                pg_upgrade itself correctly preserves objects that are
-  #                STILL at the oldest supported version at the moment of
-  #                the binary upgrade - a real-world scenario (a user
-  #                upgrading their PostgreSQL major while still running an
-  #                old extension version) that the old_pg=12 leg alone
-  #                would miss.
+  #   old_pg=10 -- the OLDEST PG floor this job tests, AND (via TWIN
+  #                databases in the SAME cluster, migrated by a SINGLE
+  #                pg_upgrade call - the same trick this file uses to cross
+  #                TEST_SCHEMA without doubling matrix legs elsewhere) the
+  #                leg that compares BOTH update-vs-pg_upgrade orderings a
+  #                real user could hit:
+  #                  count_nulls_upgrade_oldest_first  -- stays at 0.9.6
+  #                    through the binary pg_upgrade, updated to current
+  #                    AFTER it (on the NEW cluster). Proves pg_upgrade
+  #                    itself correctly preserves objects that are STILL at
+  #                    the oldest supported version at the moment of the
+  #                    upgrade - a real-world scenario (a user upgrading
+  #                    their PostgreSQL major while still running an old
+  #                    extension version).
+  #                  count_nulls_upgrade_current_first -- updated to
+  #                    current BEFORE the binary pg_upgrade (on the OLD
+  #                    cluster). Proves pg_upgrade correctly migrates the
+  #                    objects count_nulls' CURRENT code actually creates -
+  #                    migrating 0.9.6's objects and updating afterward
+  #                    would instead test whether pg_upgrade can migrate a
+  #                    legacy structure frozen in the past, which isn't
+  #                    actionable on its own (that version already shipped;
+  #                    nothing to fix if it turned out fragile) - which is
+  #                    exactly why this leg exists alongside oldest_first
+  #                    rather than instead of it.
+  #   old_pg=12 -- a second, unrelated old-PG-floor data point: a SINGLE
+  #                database (count_nulls_upgrade) using the simpler
+  #                update-before-pg_upgrade ordering only (the original,
+  #                pre-ordering-comparison design). The ordering comparison
+  #                itself is a property of pg_upgrade, not of which PG
+  #                floor it runs from, so there's no reason to re-run it at
+  #                a second floor once old_pg=10 has already covered both
+  #                orderings - a second ordering-comparison leg here would
+  #                only duplicate that proof at extra CI cost.
   #
-  # Both legs still end up with a current-version database by the time
-  # run-suite runs, so nothing downstream (the pgTAP suite, the dependency
-  # guard check) needs to differ - only WHICH SIDE of the pg_upgrade call
-  # the update happens on. No bridge-update step first, in either leg:
-  # count_nulls has always been pure SQL functions with no
-  # SELECT-*-over-catalog views, so it has no known pg_upgrade-unsafe old
-  # version to bridge past.
+  # Every database on every leg still ends up at the current version by the
+  # time run-suite runs, so nothing downstream (the pgTAP suite, the
+  # dependency guard check) needs to differ - only how many databases exist
+  # per leg and which side(s) of the pg_upgrade call their update(s) happen
+  # on. No bridge-update step first, on any leg: count_nulls has always been
+  # pure SQL functions with no SELECT-*-over-catalog views, so it has no
+  # known pg_upgrade-unsafe old version to bridge past.
   #
   # Deliberately not doing a stepwise every-major-in-sequence climb (one
   # cluster walking 10->11->12->...->newest, vs. the single big jumps here):
@@ -364,23 +380,44 @@ jobs:
         uses: actions/checkout@v4
       - name: Install count_nulls into old cluster
         run: make install
+      - name: Prepare the old cluster (install + dependency guard), old_pg=10 twin databases
+        # old_pg=10 leg only - see the job's own header comment above for
+        # why this leg alone needs twin databases. Two separate databases
+        # (distinct names, one per ordering) so both exist in the SAME
+        # cluster ahead of the single pg_upgrade call below - that one
+        # binary upgrade migrates both at once. prepare-old installs
+        # count_nulls at 0.9.6 in each, then plants + proves the dependency
+        # guard, so a later accidental CASCADE drop anywhere in this job
+        # cannot silently make the eventual existing-mode run test a fresh
+        # install instead.
+        if: matrix.old_pg == '10'
+        run: |
+          bin/test_existing prepare-old count_nulls_upgrade_oldest_first "" 0.9.6
+          bin/test_existing prepare-old count_nulls_upgrade_current_first "" 0.9.6
       - name: Prepare the old cluster (install + dependency guard)
-        # prepare-old installs count_nulls at 0.9.6, then plants + proves
-        # the dependency guard, so a later accidental CASCADE drop anywhere
-        # in this job cannot silently make the eventual existing-mode run
-        # test a fresh install instead.
+        # old_pg=12 leg only (the original, single-database design) - see
+        # the job's own header comment above. prepare-old installs
+        # count_nulls at 0.9.6, then plants + proves the dependency guard,
+        # so a later accidental CASCADE drop anywhere in this job cannot
+        # silently make the eventual existing-mode run test a fresh install
+        # instead.
+        if: matrix.old_pg == '12'
         run: bin/test_existing prepare-old count_nulls_upgrade "" 0.9.6
       - name: Update to current before pg_upgrade (proves pg_upgrade preserves CURRENT objects)
-        # old_pg=12 leg only - see the job's own header comment above for
-        # why the two legs deliberately differ here. Exercises ALTER
-        # EXTENSION UPDATE on the OLD cluster, BEFORE the binary pg_upgrade
-        # below, running the 0.9.6->stable update script, so pg_upgrade
-        # runs against already-current objects, not 0.9.6 ones. `make
-        # install` above already installed the current version's update
-        # scripts/control file into this (old) cluster's sharedir, so
-        # they're in place for this ALTER EXTENSION UPDATE to use.
-        if: matrix.old_pg == '12'
-        run: bin/test_existing update count_nulls_upgrade
+        # Runs on BOTH legs, but against a different database per leg - see
+        # the job's own header comment above. On old_pg=10 this updates
+        # ONLY count_nulls_upgrade_current_first (count_nulls_upgrade_oldest_first
+        # must NOT be touched here - it stays at 0.9.6 until AFTER
+        # pg_upgrade, below). On old_pg=12 this updates the single
+        # count_nulls_upgrade database (unchanged from the original
+        # design). Exercises ALTER EXTENSION UPDATE on the OLD cluster,
+        # BEFORE the binary pg_upgrade below, running the 0.9.6->stable
+        # update script, so pg_upgrade runs against already-current
+        # objects, not 0.9.6 ones. `make install` above already installed
+        # the current version's update scripts/control file into this
+        # (old) cluster's sharedir, so they're in place for this ALTER
+        # EXTENSION UPDATE to use.
+        run: bin/test_existing update ${{ matrix.old_pg == '10' && 'count_nulls_upgrade_current_first' || 'count_nulls_upgrade' }}
       - name: Install PostgreSQL ${{ matrix.new_pg }}
         run: apt-get install -y postgresql-${{ matrix.new_pg }} postgresql-server-dev-${{ matrix.new_pg }}
       - name: Install count_nulls into new cluster
@@ -408,28 +445,47 @@ jobs:
                       -name '*.log' 2>/dev/null | sort | xargs -r tail -n +1; exit 1; }
           pg_ctlcluster ${{ matrix.new_pg }} test start
       - name: Update to current after pg_upgrade (proves pg_upgrade preserves OLDEST-version objects)
-        # old_pg=10 leg only - see the job's own header comment above for
-        # why the two legs deliberately differ here. Exercises ALTER
-        # EXTENSION UPDATE AFTER the binary pg_upgrade above, against the
-        # NEW cluster (already started by the previous step, and the only
-        # cluster listening on 5432 at this point, since the old one was
-        # stopped in that same step) - the 0.9.6 objects prepare-old
-        # planted are thus still at 0.9.6 at the moment pg_upgrade itself
-        # runs, so this leg proves pg_upgrade correctly preserves objects
-        # still frozen at the oldest supported version, not just
+        # old_pg=10 leg only - old_pg=12 has no after-upgrade update step at
+        # all, since its single database was already updated BEFORE the
+        # upgrade above. Exercises ALTER EXTENSION UPDATE AFTER the binary
+        # pg_upgrade above, against the NEW cluster (already started by the
+        # previous step, and the only cluster listening on 5432 at this
+        # point, since the old one was stopped in that same step), on
+        # count_nulls_upgrade_oldest_first ONLY (count_nulls_upgrade_current_first
+        # was already updated before the upgrade, above, and must not be
+        # updated again here) - the 0.9.6 objects prepare-old planted into
+        # that database are thus still at 0.9.6 at the moment pg_upgrade
+        # itself runs, so this leg proves pg_upgrade correctly preserves
+        # objects still frozen at the oldest supported version, not just
         # already-current ones. `make install` into the new cluster above
         # already installed the current version's update scripts/control
         # file into ITS sharedir, so they're in place for this ALTER
         # EXTENSION UPDATE to use.
         if: matrix.old_pg == '10'
-        run: bin/test_existing update count_nulls_upgrade
-      - name: Run the suite against the pg_upgraded database (existing mode)
+        run: bin/test_existing update count_nulls_upgrade_oldest_first
+      - name: Run the suite against the pg_upgraded database(s) (existing mode), old_pg=10 twin databases
+        # old_pg=10 leg only - see the job's own header comment above.
         # run-suite asserts the version, re-proves the dependency guard
         # still blocks a non-CASCADE drop (i.e. it survived both the update
         # and pg_upgrade), drops the guard, then runs the suite against the
         # REAL pg_upgraded database via --use-existing (so pg_regress does
         # not drop/recreate it) - a plain fresh `make test` would silently
+        # test a fresh install instead of the migrated objects. Once per
+        # database, since each holds an independent ordering's result.
+        if: matrix.old_pg == '10'
+        run: |
+          bin/test_existing run-suite count_nulls_upgrade_oldest_first ""
+          bin/test_existing run-suite count_nulls_upgrade_current_first ""
+      - name: Run the suite against the pg_upgraded database (existing mode)
+        # old_pg=12 leg only (the original, single-database design) - see
+        # the job's own header comment above. run-suite asserts the
+        # version, re-proves the dependency guard still blocks a
+        # non-CASCADE drop (i.e. it survived both the update and
+        # pg_upgrade), drops the guard, then runs the suite against the
+        # REAL pg_upgraded database via --use-existing (so pg_regress does
+        # not drop/recreate it) - a plain fresh `make test` would silently
         # test a fresh install instead of the migrated objects.
+        if: matrix.old_pg == '12'
         run: bin/test_existing run-suite count_nulls_upgrade ""
 
   pg-tle-test:
