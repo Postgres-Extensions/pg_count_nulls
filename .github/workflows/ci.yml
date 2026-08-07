@@ -304,13 +304,13 @@ jobs:
   # (the same trick this file uses to cross TEST_SCHEMA without doubling
   # matrix legs elsewhere), compares BOTH update-vs-pg_upgrade orderings a
   # real user could hit:
-  #   count_nulls_upgrade_oldest_first  -- stays at 0.9.6 through the
+  #   upgrade_oldest_first  -- stays at 0.9.6 through the
   #     binary pg_upgrade, updated to current AFTER it (on the NEW
   #     cluster). Proves pg_upgrade itself correctly preserves objects
   #     that are STILL at the oldest supported version at the moment of
   #     the upgrade - a real-world scenario (a user upgrading their
   #     PostgreSQL major while still running an old extension version).
-  #   count_nulls_upgrade_current_first -- updated to current BEFORE the
+  #   upgrade_current_first -- updated to current BEFORE the
   #     binary pg_upgrade (on the OLD cluster). Proves pg_upgrade
   #     correctly migrates the objects count_nulls' CURRENT code actually
   #     creates - migrating 0.9.6's objects and updating afterward would
@@ -368,15 +368,13 @@ jobs:
       # refuses to run.
       INITDB_OPTS: --data-checksums --auth trust
     steps:
-      - name: Start PostgreSQL ${{ matrix.old_pg }}
-        run: pg-start ${{ matrix.old_pg }}
-      - name: Recreate old cluster with data checksums enabled
+      - name: Install PostgreSQL ${{ matrix.old_pg }} (cluster created next, with the right initdb options from the start)
+        run: NO_CLUSTER=1 pg-start ${{ matrix.old_pg }}
+      - name: Create old cluster with data checksums enabled
         run: |
-          pg_ctlcluster ${{ matrix.old_pg }} test stop
-          pg_dropcluster ${{ matrix.old_pg }} test
-          # -p 5432: pg_createcluster assigns the next available port, which
-          # may not be 5432 after pg-start has claimed and released it.
-          # Force 5432 so subsequent psql/createdb calls connect without -p.
+          # -p 5432: pg_createcluster would otherwise assign the next
+          # available port; force 5432 so subsequent psql/createdb calls
+          # connect without -p.
           pg_createcluster -p 5432 ${{ matrix.old_pg }} test -- $INITDB_OPTS
           pg_ctlcluster ${{ matrix.old_pg }} test start
           pg_isready -t 30
@@ -393,11 +391,11 @@ jobs:
         # anywhere in this job cannot silently make the eventual
         # existing-mode run test a fresh install instead.
         run: |
-          bin/test_existing prepare-old count_nulls_upgrade_oldest_first "" 0.9.6
-          bin/test_existing prepare-old count_nulls_upgrade_current_first "" 0.9.6
+          bin/test_existing prepare-old upgrade_oldest_first "" 0.9.6
+          bin/test_existing prepare-old upgrade_current_first "" 0.9.6
       - name: Update to current before pg_upgrade (proves pg_upgrade preserves CURRENT objects)
-        # Updates ONLY count_nulls_upgrade_current_first
-        # (count_nulls_upgrade_oldest_first must NOT be touched here - it
+        # Updates ONLY upgrade_current_first
+        # (upgrade_oldest_first must NOT be touched here - it
         # stays at 0.9.6 until AFTER pg_upgrade, below). Exercises ALTER
         # EXTENSION UPDATE on the OLD cluster, BEFORE the binary pg_upgrade
         # below, running the 0.9.6->stable update script, so pg_upgrade
@@ -405,7 +403,7 @@ jobs:
         # install` above already installed the current version's update
         # scripts/control file into this (old) cluster's sharedir, so
         # they're in place for this ALTER EXTENSION UPDATE to use.
-        run: bin/test_existing update count_nulls_upgrade_current_first
+        run: bin/test_existing update upgrade_current_first
       - name: Install PostgreSQL ${{ matrix.new_pg }}
         run: apt-get install -y postgresql-${{ matrix.new_pg }} postgresql-server-dev-${{ matrix.new_pg }}
       - name: Install count_nulls into new cluster
@@ -437,7 +435,7 @@ jobs:
         # above, against the NEW cluster (already started by the previous
         # step, and the only cluster listening on 5432 at this point,
         # since the old one was stopped in that same step), on
-        # count_nulls_upgrade_oldest_first ONLY (count_nulls_upgrade_current_first
+        # upgrade_oldest_first ONLY (upgrade_current_first
         # was already updated before the upgrade, above, and must not be
         # updated again here) - the 0.9.6 objects prepare-old planted into
         # that database are thus still at 0.9.6 at the moment pg_upgrade
@@ -447,7 +445,7 @@ jobs:
         # already installed the current version's update scripts/control
         # file into ITS sharedir, so they're in place for this ALTER
         # EXTENSION UPDATE to use.
-        run: bin/test_existing update count_nulls_upgrade_oldest_first
+        run: bin/test_existing update upgrade_oldest_first
       - name: Run the suite against the pg_upgraded database(s) (existing mode), twin databases
         # run-suite asserts the version, re-proves the dependency guard
         # still blocks a non-CASCADE drop (i.e. it survived both the update
@@ -457,8 +455,8 @@ jobs:
         # test a fresh install instead of the migrated objects. Once per
         # database, since each holds an independent ordering's result.
         run: |
-          bin/test_existing run-suite count_nulls_upgrade_oldest_first ""
-          bin/test_existing run-suite count_nulls_upgrade_current_first ""
+          bin/test_existing run-suite upgrade_oldest_first ""
+          bin/test_existing run-suite upgrade_current_first ""
 
   pg-tle-test:
     needs: [changes]
