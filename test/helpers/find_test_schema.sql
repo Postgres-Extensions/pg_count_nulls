@@ -1,24 +1,26 @@
 /*
  * Discovers the schema count_nulls was installed into for this test run -
  * for scripts/sessions that didn't create it themselves and have no other
- * way to know its (randomly generated) name. See test/install/load.sql for
- * how/why the name is randomized.
+ * way to know its (randomly generated) name. See
+ * test/helpers/create_test_schema.sql for how/why the name is randomized.
  *
- * Exactly one schema matching the prefix is expected. Finding zero or more
- * than one means something is broken (e.g. a previous run's schema was
- * never cleaned up, or this ran before installation happened) - abort
- * immediately rather than silently guessing. This is a hard failure, not a
- * pgTAP-style assertion.
+ * SELECT ... INTO STRICT raises Postgres's own no_data_found/too_many_rows
+ * if this doesn't resolve to exactly one schema, instead of hand-counting
+ * rows and raising a custom exception for the same thing - a DO block
+ * can't populate a psql variable itself (confirmed directly: a `\gset`
+ * following one just silently re-executes it and sets nothing), so the
+ * actual :test_schema capture below still has to be a separate plain
+ * SELECT. This is a hard failure either way, not a pgTAP-style assertion -
+ * finding zero or more than one match means something is broken (a
+ * previous run's schema was never cleaned up, or this ran before
+ * installation happened) and must abort immediately rather than silently
+ * guessing.
  */
 DO $$
 DECLARE
-  v_count int := (SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'count_nulls test schema %');
+  v_schema name;
 BEGIN
-  IF v_count <> 1 THEN
-    RAISE EXCEPTION
-      'expected exactly one schema matching ''count_nulls test schema %%'', found %'
-      , v_count;
-  END IF;
+  SELECT nspname INTO STRICT v_schema FROM pg_namespace WHERE nspname LIKE 'count_nulls test schema %';
 END
 $$;
 
