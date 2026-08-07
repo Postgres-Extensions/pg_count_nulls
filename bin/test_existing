@@ -122,7 +122,7 @@ drop_guard() {
 
 assert_version() {
   local db=$1 expected=$2 installed
-  [ "$expected" = current ] && expected=$(current_version)
+  if [ "$expected" = current ]; then expected=$(current_version); fi
   installed=$(installed_version "$db")
   echo "version check '$db': installed='$installed' expected='$expected'"
   if [ -z "$installed" ] || [ -z "$expected" ] || [ "$installed" != "$expected" ]; then
