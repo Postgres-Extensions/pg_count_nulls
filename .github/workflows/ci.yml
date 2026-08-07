@@ -83,20 +83,19 @@ jobs:
   # would never report on doc-only pushes and get stuck Pending in branch
   # protection.
   #
-  # Also derives the supported-PostgreSQL-major list the test job consumes,
-  # from a single NEWEST constant plus META.json's own declared minimum
-  # (not a second hand-maintained floor constant): every job that cares
-  # which majors are supported reads the SAME list, so they can't silently
-  # drift onto different sets, and adding a new major is a one-line change
-  # here instead of an edit in several jobs. `newest_pg` is the same
-  # NEWEST constant emitted again as a bare scalar (not wrapped in the
-  # JSON-array `supported_pg`), consumed only by the `test` job's draft-PR
-  # matrix reduction and `pg-upgrade-test`'s new_pg leg (see the
-  # top-of-file comment and those jobs' own comments) - so NEWEST still
-  # only needs to change in one place. `floor_pg` is likewise the same
-  # FLOOR value (the META.json-derived floor, e.g. "9.4") emitted as a
-  # bare scalar, consumed only by `pg-upgrade-test`'s old_pg leg - so the
-  # oldest-supported-PG floor also only needs to change in one place.
+  # Also derives the supported-PostgreSQL-major list every other job reads,
+  # from a single NEWEST constant plus META.json's own declared minimum (not
+  # a second hand-maintained floor constant) - every job that cares which
+  # majors are supported reads the SAME values, so they can't silently drift
+  # onto different sets, and adding a new major is a one-line change here
+  # instead of an edit in several jobs.
+  #   - supported_pg: the full descending list (NEWEST down to the
+  #     META.json-derived floor), as a JSON array, for jobs that need every
+  #     supported major.
+  #   - newest_pg: just the single newest major, as a bare scalar, for
+  #     anything that needs one value instead of the full array.
+  #   - floor_pg: just the single oldest (META.json-derived) major, as a
+  #     bare scalar, for the same reason.
   changes:
     name: 🔍 Detect docs-only changes & derive PG matrix
     runs-on: ubuntu-latest
@@ -174,9 +173,9 @@ jobs:
         id: pg
         run: |
           # A dozen-odd lines to replace what looks like a handful of version
-          # references, but it buys CONSISTENCY: the fresh-install/update
-          # `test` matrix derives its PostgreSQL set from this ONE source, so
-          # it cannot silently drift onto a different list. Adding a new
+          # references, but it buys CONSISTENCY: every job that needs the
+          # supported-major list derives it from this ONE source, so none of
+          # them can silently drift onto a different list. Adding a new
           # major is a one-line NEWEST bump here, not an edit in N places.
           #
           # The floor itself is NOT a second hardcoded constant here: it's
@@ -222,20 +221,16 @@ jobs:
 
           echo "supported_pg=$(json)" >> "$GITHUB_OUTPUT"
 
-          # Also emitted as a bare scalar (not a JSON array) so the `test`
-          # job's draft-PR matrix reduction (see its own comment) can build a
-          # single-element list from it via fromJSON(format(...)) without a
-          # second hardcoded "18" anywhere in this file.
+          # Also emitted as a bare scalar (not a JSON array), for anything
+          # that needs just the single newest major instead of the full
+          # array - so NEWEST still only needs to change in one place.
           echo "newest_pg=$NEWEST" >> "$GITHUB_OUTPUT"
 
           # Same idea for the OLDEST supported major: emit the exact $FLOOR
           # value supported_pg above already derived from META.json, as a
-          # bare scalar, so pg-upgrade-test's old_pg leg can build a
-          # single-element list from it too - rather than hand-maintaining
-          # a THIRD copy of this number (the actual bug this is fixing:
-          # pg-upgrade-test's old_pg matrix used to hardcode ["10", "12"],
-          # which drifted from the real 9.4 floor the moment PR #51
-          # established it here).
+          # bare scalar, for anything that needs just the single oldest
+          # major instead of the full array - rather than hand-maintaining a
+          # THIRD copy of this number.
           echo "floor_pg=$FLOOR" >> "$GITHUB_OUTPUT"
 
   lint:
