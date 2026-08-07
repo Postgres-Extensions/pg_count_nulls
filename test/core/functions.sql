@@ -75,11 +75,12 @@ BEGIN
 
       /*
        * Explicit descriptions below (not pgTAP's auto-generated default,
-       * which schema-qualifies via ncs()): this suite may run against
-       * count_nulls installed in ANY schema (see TEST_SCHEMA in the
-       * Makefile), and the description text is exact-matched by pg_regress
-       * against a single committed expected-output file - it must stay
-       * IDENTICAL no matter which schema the extension actually landed in.
+       * which schema-qualifies via ncs()): this suite runs against
+       * count_nulls installed in a freshly, randomly generated schema (see
+       * "Schema targeting" in test/README.md), and the description text is
+       * exact-matched by pg_regress against a single committed
+       * expected-output file - it must stay IDENTICAL no matter which
+       * schema the extension actually landed in.
        * ncs() itself is still used to locate and call the real function;
        * only the visible description text drops it.
        */
@@ -140,7 +141,8 @@ CREATE FUNCTION pg_temp.test_trigger_raw(
    * Schema-free stand-in for exec, used ONLY in the visible description
    * below - exec itself (schema-qualified via ncs(), by callers) is what
    * actually runs. Keeps this suite's output identical no matter which
-   * schema count_nulls is installed in (see TEST_SCHEMA).
+   * randomly generated schema count_nulls is installed in (see "Schema
+   * targeting" in test/README.md).
    */
   , exec_desc text
 

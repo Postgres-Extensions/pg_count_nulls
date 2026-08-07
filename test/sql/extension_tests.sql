@@ -6,52 +6,28 @@
 
 /*
  * This file leaves search_path as functions.sql set it (_null_count_test,
- * tap) - with an explicit TEST_SCHEMA, that keeps count_nulls' own schema
- * off search_path, so every check below only passes if functions.sql's
+ * tap), and count_nulls always installs into its own freshly, randomly
+ * generated schema (see test/install/load.sql) - which is never on that
+ * search_path. So every check below only passes if functions.sql's
  * %I-qualified calls (via ncs()) are actually correct, never relying on
- * count_nulls' own schema being reachable unqualified. When TEST_SCHEMA is
- * empty, count_nulls lands in 'public' (test/install/load.sql runs in its
- * own bare connection, with no schema targeting - see phase 1's commit
- * message), which is NOT on search_path here either.
- *
- * Excluding it from BOTH legs is stronger than strictly required: the thing
- * that actually makes a multi-schema matrix meaningful is that AT LEAST ONE
- * tested schema is verifiably off search_path (otherwise installing into two
- * schemas that both happen to stay reachable would let an unqualified,
- * resolve-by-accident reference pass every leg without ever being caught).
- * Keeping both legs off search_path is a simpler, deliberately stricter
- * choice here, not evidence that every leg must be - a hypothetical future
- * leg that left its schema on search_path wouldn't invalidate this design,
- * as long as at least one other leg still excludes it.
- *
- * schema_hint reads the count_nulls.test_schema GUC directly (the Makefile
- * exports it via PGOPTIONS for the whole run - see test/install/load.sql,
- * which installs into it) rather than via a psql variable relayed through
- * test/deps.sql: nothing in this per-test session needs deps.sql to have
- * set anything, since the GUC is readable from any session in the run.
- * NULLIF turns the empty-TEST_SCHEMA case into NULL, and runtests() calls
- * every test__* function with no arguments, so it always gets this default.
+ * count_nulls' own schema being reachable unqualified.
  */
 CREATE FUNCTION _null_count_test.test__check_ncs(
-  schema_hint name DEFAULT nullif(current_setting('count_nulls.test_schema'), '')::name
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
 DECLARE
     /*
-     * We either expect count_nulls' own schema to be in search_path, or we
-     * don't - and in this file we never do, in either leg: functions.sql
-     * unconditionally sets search_path to exclude it (see the header
-     * comment above), whether that's the empty leg's 'public' or the
-     * TEST_SCHEMA leg's known target. s is still real, independently
-     * determined content (via ncs() when there's no fixed target, via
-     * schema_hint when there is), so the membership check below genuinely
-     * exercises functions.sql's %I-qualification and load.sql's schema
-     * targeting - it isn't a tautology.
+     * We never expect count_nulls' own schema to be in search_path in this
+     * file: functions.sql unconditionally sets search_path to exclude it
+     * (see the header comment above). s is still real, independently
+     * determined content (via ncs()), so the membership check below
+     * genuinely exercises functions.sql's %I-qualification and load.sql's
+     * schema targeting - it isn't a tautology.
      *
      * SEE ALSO: teardown__search_path_unchanged in test/core/functions.sql,
      * which guards against some OTHER test mutating search_path mid-suite (a
      * different risk than this check).
      */
-    s CONSTANT name = coalesce(schema_hint, ncs());
+    s CONSTANT name = ncs();
 BEGIN
     RETURN NEXT is(
         current_schemas(true) @> array[s]
@@ -62,25 +38,29 @@ END
 $body$;
 
 CREATE FUNCTION _null_count_test.test__shutdown__drop_all(
-  schema_hint name DEFAULT nullif(current_setting('count_nulls.test_schema'), '')::name
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
+DECLARE
+    /*
+     * Captured before DROP EXTENSION: ncs() looks the schema up live via
+     * pg_extension, which can't resolve anything once the extension is
+     * gone.
+     */
+    s CONSTANT name = ncs();
 BEGIN
     RETURN NEXT lives_ok(
         $$DROP EXTENSION count_nulls$$
     );
 
     /*
-     * Plain cleanup, not a TAP assertion - dropping the schema TEST_SCHEMA
-     * created isn't something this suite is testing, just tearing down
-     * what it created. Same output in every TEST_SCHEMA leg: when
-     * schema_hint is NULL (empty leg), there's nothing to drop, so this is
-     * a no-op; if the DROP SCHEMA itself ever failed, the unhandled
-     * exception aborts the run loudly on its own - no lives_ok() needed
-     * for that.
+     * Plain cleanup, not a TAP assertion - dropping the schema count_nulls
+     * was installed into isn't something this suite is testing, just
+     * tearing down what test/install/load.sql created. Every run always
+     * has a schema to drop (there's no longer an "installed with no
+     * schema targeting" case). If the DROP SCHEMA itself ever failed, the
+     * unhandled exception aborts the run loudly on its own - no lives_ok()
+     * needed for that.
      */
-    IF schema_hint IS NOT NULL THEN
-        EXECUTE format('DROP SCHEMA %I', schema_hint);
-    END IF;
+    EXECUTE format('DROP SCHEMA %I', s);
 END
 $body$;
 

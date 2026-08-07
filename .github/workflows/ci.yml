@@ -35,15 +35,12 @@
 #                              through AWS pg_tle's database-backed catalog
 #                              instead of a filesystem .control file.
 #
-# Every TEST_SCHEMA value (empty - no schema targeting at all - and
-# 'Quoted', a name requiring SQL identifier quoting) is exercised too, via
-# `make test-schema-all`'s in-Makefile loop rather than a CI matrix
-# dimension - a schema name is just an input the same assertions run
-# against, not a real environment difference, so crossing it into the
-# matrix would only multiply job count for no added confidence (see the
-# Makefile's TEST_SCHEMA_VALUES comment). Every leg passes against the SAME
-# test/expected/extension_tests.out (see test/README.md for how the suite
-# keeps its output schema-invariant).
+# count_nulls always installs into its own freshly, randomly generated
+# schema (a name that always requires SQL identifier quoting - see
+# test/install/load.sql), so every run exercises the suite's %I
+# schema-qualification, not just its literal test data. test/expected/
+# extension_tests.out stays schema-invariant regardless of the actual
+# generated name (see test/README.md for how).
 #
 # `changes` is a cheap gate that lets the heavy jobs above skip themselves on
 # doc-only pushes, and also derives the shared PostgreSQL-major list those
@@ -251,16 +248,10 @@ jobs:
   # UPDATEs to current (no pg_upgrade, same PostgreSQL) and reruns the
   # suite - a single job rather than a dedicated one, since a load mode is
   # just an input the same assertions run against, not a real environment
-  # difference (same reasoning as TEST_SCHEMA below), and the per-version
-  # container/checkout setup would otherwise be duplicated across two jobs
-  # with the same PG matrix. Every TEST_SCHEMA value (empty - no schema
-  # targeting at all - and 'Quoted', a name requiring SQL identifier
-  # quoting) is exercised too, via `make test-schema-all`'s in-Makefile
-  # loop rather than a CI matrix dimension - a schema name is just an
-  # input the same assertions run against, not a real environment
-  # difference, so crossing it into the matrix would only multiply job
-  # count for no added confidence (see the Makefile's TEST_SCHEMA_VALUES
-  # comment). Every leg passes against the SAME
+  # difference, and the per-version container/checkout setup would
+  # otherwise be duplicated across two jobs with the same PG matrix. Each
+  # install (both legs) always targets its own freshly, randomly generated
+  # schema (see test/install/load.sql), so both legs pass against the SAME
   # test/expected/extension_tests.out (see test/README.md for how the
   # suite keeps its output schema-invariant).
   test:
@@ -284,8 +275,8 @@ jobs:
         run: pg-start ${{ matrix.pg }}
       - name: Check out the repo
         uses: actions/checkout@v4
-      - name: Test on PostgreSQL ${{ matrix.pg }}, across every TEST_SCHEMA value
-        run: make test-schema-all
+      - name: Test on PostgreSQL ${{ matrix.pg }}
+        run: make test
       - name: Install count_nulls
         run: make install
       - name: Update 0.9.6 -> current and run the suite
@@ -300,10 +291,8 @@ jobs:
   # A single old_pg/new_pg leg (old_pg from the changes job's floor_pg
   # output, new_pg from its newest_pg output - see that job's comment; NOT
   # a second/third hardcoded copy of either number), which via TWIN
-  # databases in the SAME cluster, migrated by a SINGLE pg_upgrade call
-  # (the same trick this file uses to cross TEST_SCHEMA without doubling
-  # matrix legs elsewhere), compares BOTH update-vs-pg_upgrade orderings a
-  # real user could hit:
+  # databases in the SAME cluster, migrated by a SINGLE pg_upgrade call,
+  # compares BOTH update-vs-pg_upgrade orderings a real user could hit:
   #   upgrade_oldest_first  -- stays at 0.9.6 through the
   #     binary pg_upgrade, updated to current AFTER it (on the NEW
   #     cluster). Proves pg_upgrade itself correctly preserves objects
@@ -341,9 +330,6 @@ jobs:
   # functions over anyarray/json/jsonb, nothing version-sensitive to
   # break at a specific boundary. Revisit if count_nulls ever grows
   # something catalog-touching.
-  #
-  # Not yet crossed with TEST_SCHEMA (a later phase adds that, once it can
-  # do so for both this job and the test job's update leg together).
   pg-upgrade-test:
     needs: [changes]
     # Skipped outright (not just matrix-reduced like `test`) on a draft PR:
@@ -391,8 +377,8 @@ jobs:
         # anywhere in this job cannot silently make the eventual
         # existing-mode run test a fresh install instead.
         run: |
-          bin/test_existing prepare-old upgrade_oldest_first "" 0.9.6
-          bin/test_existing prepare-old upgrade_current_first "" 0.9.6
+          bin/test_existing prepare-old upgrade_oldest_first 0.9.6
+          bin/test_existing prepare-old upgrade_current_first 0.9.6
       - name: Update to current before pg_upgrade (proves pg_upgrade preserves CURRENT objects)
         # Updates ONLY upgrade_current_first
         # (upgrade_oldest_first must NOT be touched here - it
@@ -455,8 +441,8 @@ jobs:
         # test a fresh install instead of the migrated objects. Once per
         # database, since each holds an independent ordering's result.
         run: |
-          bin/test_existing run-suite upgrade_oldest_first ""
-          bin/test_existing run-suite upgrade_current_first ""
+          bin/test_existing run-suite upgrade_oldest_first
+          bin/test_existing run-suite upgrade_current_first
 
   pg-tle-test:
     needs: [changes]
@@ -585,11 +571,11 @@ jobs:
 
   # A single stable check name for use as a required status check in branch
   # protection rules. Matrix jobs produce check names like
-  # "🐘 PostgreSQL 14 (schema none)" which would all need to be listed
-  # individually and updated whenever the matrix changes. This job passes if
-  # all others passed or were skipped (e.g. the heavy jobs gated off by the
-  # `changes` job on a docs-only push), and fails if any failed or were
-  # cancelled.
+  # "🐘 PostgreSQL 14" (one per supported major) which would all need to be
+  # listed individually and updated whenever the matrix changes. This job
+  # passes if all others passed or were skipped (e.g. the heavy jobs gated
+  # off by the `changes` job on a docs-only push), and fails if any failed
+  # or were cancelled.
   all-checks-passed:
     needs: [changes, lint, test, pg-upgrade-test, pg-tle-test]
     if: always()

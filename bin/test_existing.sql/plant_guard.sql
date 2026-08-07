@@ -8,23 +8,17 @@
  * otherwise fall through to a silent fresh reinstall and the job would
  * still report green).
  *
- * Usage: psql -v ON_ERROR_STOP=1 -v schema=<schema-or-empty> -f plant_guard.sql
- * (empty schema means "wherever null_count already resolves unqualified" -
- * i.e. count_nulls was installed without targeting a schema).
+ * count_nulls always installs into its own randomly generated schema (see
+ * test/install/load.sql) - this session didn't create it, so it has no
+ * other way to know its name; test/helpers/find_test_schema.sql discovers
+ * it live via pg_namespace.
+ *
+ * Usage: psql -v ON_ERROR_STOP=1 -f plant_guard.sql
  */
 \set ON_ERROR_STOP on
 
-/*
- * schema_prefix: either empty, or the quoted schema name followed by a
- * literal '.' - so the view definition below is a single statement with a
- * plain (unquoted) substitution, rather than branching the whole CREATE
- * VIEW on whether a schema was given. quote_ident(), not :"schema" -
- * :schema_prefix is pasted as-is (unquoted substitution), so it must
- * already be valid, properly-quoted SQL text by the time it lands there.
- */
-SELECT CASE WHEN :'schema' <> '' THEN quote_ident(:'schema') || '.' ELSE '' END AS schema_prefix
-\gset
+\i test/helpers/find_test_schema.sql
 
 CREATE SCHEMA IF NOT EXISTS count_nulls_drop_guard;
 CREATE OR REPLACE VIEW count_nulls_drop_guard.guard AS
-  SELECT :schema_prefix null_count(NULL::int, NULL::int) AS guarded_member;
+  SELECT :"test_schema".null_count(NULL::int, NULL::int) AS guarded_member;
