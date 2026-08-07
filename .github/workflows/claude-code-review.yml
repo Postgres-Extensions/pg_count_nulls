@@ -15,9 +15,14 @@ name: Claude Code Review
 # head lives in this repo or an external fork (an arbitrary external fork
 # still can't trigger this secret-bearing job unless it's actually
 # jnasbyupgrade's own fork). The workflow file always comes from the base
-# branch (master), so a PR cannot modify the reviewer that runs on it. We
-# check out the PR head only for read context (persist-credentials: false)
-# and never build or execute PR code.
+# branch (master), so a PR cannot modify the reviewer that runs on it. The
+# checkout step below fetches the BASE ref only, never the PR head -
+# claude-code-action fetches and reads the PR's actual content itself,
+# internally, via the base repo's own refs/pull/<n>/head (see its
+# docs/security.md). Checking out the PR head directly here would put
+# untrusted fork content in the workspace for no reason, and actions/checkout
+# refuses to do so anyway under pull_request_target without an explicit
+# (and here unnecessary) allow-unsafe-pr-checkout: true opt-in.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -81,14 +86,13 @@ jobs:
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
           echo "gate decision: $decision"
 
-      - name: Check out PR head (read-only context)
+      - name: Check out base ref
         if: steps.gate.outputs.decision == 'run'
         # Intentionally tracks the major-version tag (not a pinned SHA) so
-        # upstream fixes are picked up automatically.
+        # upstream fixes are picked up automatically. No repository:/ref:
+        # override - see the SECURITY comment at the top of this file for why.
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
 
