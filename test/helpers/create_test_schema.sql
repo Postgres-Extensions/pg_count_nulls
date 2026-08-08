@@ -7,8 +7,22 @@
  * creation logic is identical in both cases, so it lives here once instead
  * of being duplicated.
  *
- * :version empty means "no VERSION clause" (installs whatever the current
- * default is); non-empty targets that specific version.
+ * :version must always be set explicitly to either the literal string
+ * 'current' (no VERSION clause - installs whatever the current default is)
+ * or a real version string (targets that specific version) - matching the
+ * same 'current' sentinel bin/test_existing's assert_version()/
+ * current_version() already use, for the same reason: an empty string is a
+ * HARD ERROR rather than a valid signal, so an accidentally-unpropagated
+ * :version fails loudly instead of silently installing 'current' when
+ * something else was actually intended.
+ *
+ * The guard below bridges :version into the DO block via a SET + a real
+ * GUC (like test/install/load.sql's count_nulls.test_load_mode) rather than
+ * referencing :'version' directly inside the DO $$ ... $$ body: psql does
+ * NOT interpolate variables inside dollar-quoted strings (confirmed
+ * directly - a bare :'version' inside a $$ ... $$ block reaches the server
+ * un-substituted and is a syntax error), only in plain top-level SQL text
+ * such as the version_clause SELECT below.
  *
  * The generated name's constant prefix (a literal trailing space included)
  * already guarantees SQL identifier quoting is required before the random
@@ -23,6 +37,16 @@
  * generating this run's own name. See test/helpers/find_test_schema.sql
  * for how later, separate sessions rediscover the name this creates.
  */
+SET count_nulls.test_schema_version = :'version';
+
+DO $$
+BEGIN
+  IF current_setting('count_nulls.test_schema_version') = '' THEN
+    RAISE EXCEPTION ':version must be set explicitly - use ''current'' to install whatever the current default is, never an empty string, so an accidentally-unpropagated value fails loudly instead of silently installing ''current'' when something else was actually intended';
+  END IF;
+END
+$$;
+
 DO $$
 DECLARE
   r record;
@@ -48,7 +72,7 @@ CREATE SCHEMA :"schema";
  * search_path, masking the extension's own install script secretly
  * depending on unqualified name resolution during install.
  */
-SELECT CASE WHEN :'version' <> '' THEN format(' VERSION %L', :'version') ELSE '' END AS version_clause
+SELECT CASE WHEN :'version' = 'current' THEN '' ELSE format(' VERSION %L', :'version') END AS version_clause
 \gset
 
 CREATE EXTENSION count_nulls WITH SCHEMA :"schema":version_clause;

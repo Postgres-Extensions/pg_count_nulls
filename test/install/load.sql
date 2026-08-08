@@ -79,7 +79,7 @@ SET client_min_messages = WARNING;
 ALTER EXTENSION count_nulls UPDATE;
 SET client_min_messages = NOTICE;
 \else
-\set version ''
+\set version 'current'
 \i test/helpers/create_test_schema.sql
 \endif
 \endif

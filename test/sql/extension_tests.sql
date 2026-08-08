@@ -11,6 +11,13 @@
  * search_path. So every check below only passes if functions.sql's
  * %I-qualified calls (via ncs()) are actually correct, never relying on
  * count_nulls' own schema being reachable unqualified.
+ *
+ * This also means test/expected/extension_tests.out stays identical run to
+ * run regardless of which random name the schema gets: none of the pgTAP
+ * assertion descriptions below embed the actual schema name (see
+ * test/README.md's "Assertion descriptions deliberately never embed the
+ * schema name" section for the full rationale), so no numbered pg_regress
+ * alternate is ever needed for it.
  */
 CREATE FUNCTION _null_count_test.test__check_ncs(
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
