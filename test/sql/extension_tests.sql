@@ -44,30 +44,23 @@ BEGIN
 END
 $body$;
 
+/*
+ * Just asserts the extension can be dropped - doesn't attempt any schema
+ * cleanup itself. test/helpers/create_test_schema.sql already
+ * unconditionally drops any leftover 'count_nulls test schema %' schema
+ * before creating a fresh one on every single invocation. A second
+ * per-run cleanup here would only ever be redundant duplicate cleanup
+ * logic and never the thing that actually matters. (It's also moot in
+ * practice: this file's functions run inside a transaction pgxntool's
+ * test harness rolls back, never commits, so an explicit DROP SCHEMA here
+ * would never persist past this run anyway.)
+ */
 CREATE FUNCTION _null_count_test.test__shutdown__drop_all(
 ) RETURNS SETOF text LANGUAGE plpgsql AS $body$
-DECLARE
-    /*
-     * Captured before DROP EXTENSION: ncs() looks the schema up live via
-     * pg_extension, which can't resolve anything once the extension is
-     * gone.
-     */
-    s CONSTANT name = ncs();
 BEGIN
     RETURN NEXT lives_ok(
         $$DROP EXTENSION count_nulls$$
     );
-
-    /*
-     * Plain cleanup, not a TAP assertion - dropping the schema count_nulls
-     * was installed into isn't something this suite is testing, just
-     * tearing down what test/install/load.sql created. Every run always
-     * has a schema to drop (there's no longer an "installed with no
-     * schema targeting" case). If the DROP SCHEMA itself ever failed, the
-     * unhandled exception aborts the run loudly on its own - no lives_ok()
-     * needed for that.
-     */
-    EXECUTE format('DROP SCHEMA %I', s);
 END
 $body$;
 
