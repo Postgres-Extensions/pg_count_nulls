@@ -35,7 +35,8 @@
 #   prepare-old DB INSTALL_VERSION
 #       Old-cluster prep for pg-upgrade-test: create DB + extension at
 #       INSTALL_VERSION (in a freshly, randomly generated schema - see
-#       test/install/load.sql), then plant + prove the dependency guard.
+#       test/helpers/create_test_schema.sql), then plant + prove the
+#       dependency guard.
 #
 #   update DB [TO_VERSION]
 #       ALTER EXTENSION count_nulls UPDATE [TO 'TO_VERSION'] (empty => current).

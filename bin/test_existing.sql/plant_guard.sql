@@ -9,9 +9,9 @@
  * still report green).
  *
  * count_nulls always installs into its own randomly generated schema (see
- * test/install/load.sql) - this session didn't create it, so it has no
- * other way to know its name; test/helpers/find_test_schema.sql discovers
- * it live via pg_namespace.
+ * test/helpers/create_test_schema.sql) - this session didn't create it, so
+ * it has no other way to know its name; test/helpers/find_test_schema.sql
+ * discovers it live via pg_namespace.
  *
  * Usage: psql -v ON_ERROR_STOP=1 -f plant_guard.sql
  */

@@ -28,29 +28,37 @@ then invoke via `runtests()`.
   `test__*` functions of its own (`test__check_ncs`, asserting count_nulls
   landed where expected; `test__shutdown__drop_all`, asserting it can be
   cleanly dropped), then runs everything via `runtests()`.
+- `helpers/create_test_schema.sql` — creates the freshly, randomly generated
+  schema and installs count_nulls into it (see "Schema targeting" below).
+  Shared by `install/load.sql`'s fresh/update modes and `bin/test_existing`'s
+  `prepare-old` - two separate call sites, one shared implementation.
 - `helpers/find_test_schema.sql` — rediscovers the randomly generated schema
   count_nulls was installed into (see "Schema targeting" below), for
   sessions that didn't create it themselves.
 
 ## Schema targeting
 
-`install/load.sql` always installs count_nulls into its own freshly,
-randomly generated schema - never a fixed name, and never no schema at all.
-The generated name (`'count_nulls test schema ' || substr(md5(random()::text), 1, 12)`)
-has two deliberate properties:
+`helpers/create_test_schema.sql` always installs count_nulls into its own
+freshly, randomly generated schema - never a fixed name, and never no
+schema at all. It's shared by `install/load.sql`'s fresh/update modes (`\i`'d
+in the same psql session) and `bin/test_existing`'s `prepare-old` (a
+separate, `-f`'d invocation) - the schema-targeting behavior described here
+applies to both. The generated name
+(`'count_nulls test schema ' || substr(md5(random()::text), 1, 12)`) has two
+deliberate properties:
 
 - A constant prefix (`count_nulls test schema `, with a trailing space)
   that by itself already requires SQL identifier quoting - so every single
   run exercises the suite's `%I`-qualification, not just a dedicated
   "quoting" leg that could bitrot independently of a "plain" one.
 - The same prefix doubles as a marker for stale-schema cleanup: before
-  generating a new name, `install/load.sql` finds and drops any
-  already-existing schema matching the prefix (`nspname LIKE 'count_nulls
-  test schema %'`), so a schema left behind by a run that crashed before
-  reaching its own teardown doesn't accumulate run over run.
+  generating a new name, `helpers/create_test_schema.sql` finds and drops
+  any already-existing schema matching the prefix (`nspname LIKE
+  'count_nulls test schema %'`), so a schema left behind by a run that
+  crashed before reaching its own teardown doesn't accumulate run over run.
 
-`install/load.sql` targets the generated schema via `CREATE EXTENSION ...
-WITH SCHEMA`, never by mutating its own search_path first.
+`helpers/create_test_schema.sql` targets the generated schema via `CREATE
+EXTENSION ... WITH SCHEMA`, never by mutating its own search_path first.
 
 **Cross-session discovery.** Some scripts/sessions (e.g. `bin/test_existing`'s
 steps, each a fresh `psql -f ...` invocation with no memory of another
@@ -78,13 +86,14 @@ descriptions, which otherwise embed the schema. This is what keeps
 `test/expected/extension_tests.out` a single file that passes no matter
 which randomly generated name count_nulls actually landed in.
 
-**`test__shutdown__drop_all`'s schema drop is plain cleanup, not a TAP
-assertion.** Dropping the schema count_nulls was installed into isn't
-something this suite is testing, just tearing down what `install/load.sql`
-created - so it's plain `EXECUTE`'d SQL with no `lives_ok()`/`skip()`
-branch. Its output is identical on every run (one `ok` row), so
-`test/expected/extension_tests.out` needs no numbered pg_regress alternate
-for this function.
+**`test__shutdown__drop_all` only asserts the extension can be dropped -
+it doesn't clean up the schema itself.** Dropping the schema count_nulls
+was installed into isn't something this suite is testing, and
+`helpers/create_test_schema.sql` already unconditionally drops any
+leftover schema before the next run creates its own, so a second, per-run
+drop here would only ever be redundant. Its output is identical on every
+run (one `ok` row), so `test/expected/extension_tests.out` needs no
+numbered pg_regress alternate for this function.
 
 ## Regenerating expected output
 
