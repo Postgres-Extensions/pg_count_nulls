@@ -32,14 +32,16 @@
 #
 # USAGE: bin/test_existing <subcommand> [args]
 #
-#   prepare-old DB SCHEMA INSTALL_VERSION
+#   prepare-old DB INSTALL_VERSION
 #       Old-cluster prep for pg-upgrade-test: create DB + extension at
-#       INSTALL_VERSION in SCHEMA, then plant + prove the dependency guard.
+#       INSTALL_VERSION (in a freshly, randomly generated schema - see
+#       test/helpers/create_test_schema.sql), then plant + prove the
+#       dependency guard.
 #
 #   update DB [TO_VERSION]
 #       ALTER EXTENSION count_nulls UPDATE [TO 'TO_VERSION'] (empty => current).
 #
-#   run-suite DB SCHEMA
+#   run-suite DB
 #       Assert the current version, re-prove the guard, drop it, then run the
 #       suite in existing mode (extension must be at the current version).
 #
@@ -101,8 +103,8 @@ installed_version() {
 # Plant the guard and PROVE it blocks a non-CASCADE drop. Call right after
 # CREATE EXTENSION (and before any update/upgrade) so it persists through them.
 plant_guard() {
-  local db=$1 schema=$2
-  psql -d "$db" -v ON_ERROR_STOP=1 -v schema="$schema" -f bin/test_existing.sql/plant_guard.sql
+  local db=$1
+  psql -d "$db" -v ON_ERROR_STOP=1 -f bin/test_existing.sql/plant_guard.sql
   assert_drop_blocked "$db"
 }
 
@@ -140,35 +142,29 @@ update_ext() {
   psql_do "$db" -c "ALTER EXTENSION count_nulls UPDATE $to"
 }
 
-# CREATE EXTENSION count_nulls at VERSION, targeting SCHEMA - unless SCHEMA
-# is empty, in which case it's created untouched, wherever the session's
-# own default search_path resolves (ordinarily 'public'). A quoted empty
-# identifier ("") is a real Postgres syntax error, so this can't just always
-# emit `CREATE SCHEMA IF NOT EXISTS "$schema"` - the empty case has to skip
-# that entirely, mirroring test/install/load.sql's own :count_nulls_has_schema
-# branch.
+# CREATE EXTENSION count_nulls at VERSION, into a freshly, randomly
+# generated schema - shared with test/install/load.sql's own fresh/update
+# installs via test/helpers/create_test_schema.sql (see that file for the
+# full rationale).
 create_extension_in_schema() {
-  local db=$1 schema=$2 version=$3 sql=""
-  if [ -n "$schema" ]; then
-    sql="CREATE SCHEMA IF NOT EXISTS \"$schema\"; SET search_path = \"$schema\"; "
-  fi
-  psql_do "$db" -c "${sql}CREATE EXTENSION count_nulls VERSION '$version'"
+  local db=$1 version=$2
+  psql -d "$db" -v ON_ERROR_STOP=1 -v version="$version" -f test/helpers/create_test_schema.sql
 }
 
 # ---------------------------------------------------------------------------
 # Subcommand implementations
 # ---------------------------------------------------------------------------
 
-# prepare-old DB SCHEMA INSTALL_VERSION
+# prepare-old DB INSTALL_VERSION
 #   Old-cluster preparation for pg-upgrade-test: create the database and the
-#   extension at INSTALL_VERSION in SCHEMA, then plant + prove the guard. No
+#   extension at INSTALL_VERSION, then plant + prove the guard. No
 #   bridge-update step first: count_nulls ships no SELECT-*-over-catalog
 #   views, so it has no known pg_upgrade-unsafe old version to bridge past.
 prepare_old() {
-  local db=$1 schema=$2 install=$3
+  local db=$1 install=$2
   createdb "$db"
-  create_extension_in_schema "$db" "$schema" "$install"
-  plant_guard "$db" "$schema"
+  create_extension_in_schema "$db" "$install"
+  plant_guard "$db"
 }
 
 # Run the pgTAP suite against an already-populated database in existing mode.
@@ -179,7 +175,7 @@ prepare_old() {
 # then runs the suite via --use-existing so pg_regress does NOT drop/recreate
 # the database.
 run_suite() {
-  local db=$1 schema=$2
+  local db=$1
   assert_version "$db" current
   assert_drop_blocked "$db"
   drop_guard "$db"
@@ -188,14 +184,14 @@ run_suite() {
   # verify-results`) is a real gate as of pgxntool 2.3.0 - it now exits
   # non-zero on regression failures instead of always exiting 0 regardless
   # of pg_regress's result (see this repo's pgxntool 2.3.0 bump).
-  make test TEST_LOAD_SOURCE=existing TEST_SCHEMA="$schema" CONTRIB_TESTDB="$db" EXTRA_REGRESS_OPTS=--use-existing
+  make test TEST_LOAD_SOURCE=existing CONTRIB_TESTDB="$db" EXTRA_REGRESS_OPTS=--use-existing
 }
 
 usage() {
   echo "usage: bin/test_existing <subcommand> [args]" >&2
-  echo "  prepare-old DB SCHEMA INSTALL_VERSION" >&2
+  echo "  prepare-old DB INSTALL_VERSION" >&2
   echo "  update DB [TO_VERSION]" >&2
-  echo "  run-suite DB SCHEMA" >&2
+  echo "  run-suite DB" >&2
   exit 2
 }
 

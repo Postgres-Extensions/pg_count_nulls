@@ -28,41 +28,54 @@ then invoke via `runtests()`.
   `test__*` functions of its own (`test__check_ncs`, asserting count_nulls
   landed where expected; `test__shutdown__drop_all`, asserting it can be
   cleanly dropped), then runs everything via `runtests()`.
+- `helpers/create_test_schema.sql` — creates the freshly, randomly generated
+  schema and installs count_nulls into it (see "Schema targeting" below).
+  Shared by `install/load.sql`'s fresh/update modes and `bin/test_existing`'s
+  `prepare-old` - two separate call sites, one shared implementation.
+- `helpers/find_test_schema.sql` — rediscovers the randomly generated schema
+  count_nulls was installed into (see "Schema targeting" below), for
+  sessions that didn't create it themselves.
 
-## TEST_SCHEMA
+## Schema targeting
 
-A make var/GUC (`count_nulls.test_schema`, propagated the same way as any
-other placeholder GUC: `make var` -> `PGOPTIONS -c ...` -> `current_setting()`
-- pg_regress doesn't forward make variables, but the psql processes it
-spawns inherit the environment) selecting which schema `install/load.sql`
-installs count_nulls into:
+`helpers/create_test_schema.sql` always installs count_nulls into its own
+freshly, randomly generated schema - never a fixed name, and never no
+schema at all. It's shared by `install/load.sql`'s fresh/update modes (`\i`'d
+in the same psql session) and `bin/test_existing`'s `prepare-old` (a
+separate, `-f`'d invocation) - the schema-targeting behavior described here
+applies to both. The generated name
+(`'count_nulls test schema ' || substr(md5(random()::text), 1, 12)`) has two
+deliberate properties:
 
-- Empty (default): no schema targeting at all - count_nulls lands wherever
-  the session's own default search_path resolves. Since `install/load.sql`
-  runs in its own bare connection (not the in-suite session pgTAP's own
-  `tap_setup.sql` runs in), that's `public`.
-- Non-empty: explicitly `CREATE SCHEMA`, then `CREATE EXTENSION ... WITH
-  SCHEMA` that name - `install/load.sql` never mutates its own
-  search_path to do this. `TEST_SCHEMA=Quoted` locally exercises a name
-  requiring SQL identifier quoting (mixed case - unquoted would fold to
-  lowercase).
+- A constant prefix (`count_nulls test schema `, with a trailing space)
+  that by itself already requires SQL identifier quoting - so every single
+  run exercises the suite's `%I`-qualification, not just a dedicated
+  "quoting" leg that could bitrot independently of a "plain" one.
+- The same prefix doubles as a marker for stale-schema cleanup: before
+  generating a new name, `helpers/create_test_schema.sql` finds and drops
+  any already-existing schema matching the prefix (`nspname LIKE
+  'count_nulls test schema %'`), so a schema left behind by a run that
+  crashed before reaching its own teardown doesn't accumulate run over run.
 
-Both legs run in CI - genuinely different code paths, not one a redundant
-special case of the other.
+`helpers/create_test_schema.sql` targets the generated schema via `CREATE
+EXTENSION ... WITH SCHEMA`, never by mutating its own search_path first.
 
-**Why two legs prove anything.** Installing into two different schemas by
-itself doesn't test whether count_nulls' own SQL correctly schema-qualifies
-its internal references - if BOTH schemas happened to stay on the test
-session's search_path (e.g. because the empty leg's `public` and the
-`TEST_SCHEMA` leg's target were both reachable), an extension full of
-unqualified, resolve-by-accident references would pass every leg too. What
-actually matters is that at least ONE leg's install schema is verifiably
-absent from search_path, so that leg's assertions only pass if `%I`-qualified
-references are genuinely correct - checked by `test__check_ncs` in
-`sql/extension_tests.sql`. This suite goes further and excludes the schema
-from search_path in *every* leg, via the fixed `SET SEARCH_PATH` in
-`core/functions.sql` - a stronger, deliberate choice, not the minimum
-required.
+**Cross-session discovery.** Some scripts/sessions (e.g. `bin/test_existing`'s
+steps, each a fresh `psql -f ...` invocation with no memory of another
+invocation's `\gset` variables) need the generated name without having
+created it themselves. `helpers/find_test_schema.sql` looks it up live via
+`pg_namespace`, hard-failing (not a pgTAP assertion - a genuinely broken
+condition, like zero or more than one matching schema) if it can't find
+exactly one, and sets `:"test_schema"` via `\gset` for the including script
+to use.
+
+**Why this proves anything.** Because count_nulls' own schema is randomly
+named, it can never coincidentally end up on the test session's
+search_path - so `core/functions.sql`'s `%I`-qualified calls (via `ncs()`)
+only pass if they're genuinely correct, never because count_nulls' schema
+happened to be reachable unqualified. `test__check_ncs` in
+`sql/extension_tests.sql` is what actually checks this, via the fixed `SET
+SEARCH_PATH` in `core/functions.sql`.
 
 **Assertion descriptions deliberately never embed the schema name.**
 `core/functions.sql`'s assertions build the SQL they *execute* via `%I`
@@ -70,17 +83,17 @@ qualification (through `ncs()`, so they're always correct no matter which
 real schema count_nulls landed in) but pass an *explicit*, schema-free
 description to every pgTAP call - overriding pgTAP's own auto-generated
 descriptions, which otherwise embed the schema. This is what keeps
-`test/expected/extension_tests.out` a single file that both TEST_SCHEMA
-legs pass against, instead of needing one file per schema value.
+`test/expected/extension_tests.out` a single file that passes no matter
+which randomly generated name count_nulls actually landed in.
 
-**`test__shutdown__drop_all`'s schema drop is plain cleanup, not a TAP
-assertion.** Dropping the schema TEST_SCHEMA created is a real, correct
-behavioral difference between "there's a schema to clean up" (non-empty)
-and "there isn't" (empty, nothing to drop) - but it's teardown, not
-something this suite is testing, so it's plain `EXECUTE`'d SQL with no
-`lives_ok()`/`skip()` branch. That keeps its TAP output identical in every
-TEST_SCHEMA leg (one `ok` row either way), so `test/expected/extension_tests.out`
-needs no numbered pg_regress alternate for this function.
+**`test__shutdown__drop_all` only asserts the extension can be dropped -
+it doesn't clean up the schema itself.** Dropping the schema count_nulls
+was installed into isn't something this suite is testing, and
+`helpers/create_test_schema.sql` already unconditionally drops any
+leftover schema before the next run creates its own, so a second, per-run
+drop here would only ever be redundant. Its output is identical on every
+run (one `ok` row), so `test/expected/extension_tests.out` needs no
+numbered pg_regress alternate for this function.
 
 ## Regenerating expected output
 
