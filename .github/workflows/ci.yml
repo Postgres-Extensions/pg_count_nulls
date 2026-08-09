@@ -278,6 +278,18 @@ jobs:
         run: make install
       - name: Update 0.9.6 -> current and run the suite
         run: make verify-results TEST_LOAD_SOURCE=update
+      - name: Structurally compare the updated objects against a fresh install
+        # A fixed pgTAP suite only proves the specific behaviors it asserts
+        # still hold; it can't catch an update script that leaves some
+        # definition/comment/ACL subtly different from what a fresh install
+        # of the same version produces. bin/compare_fresh_vs_update installs
+        # both ways itself (in its own scratch databases, both landing in
+        # the SAME randomly generated schema so the diff isolates real
+        # update-vs-fresh divergence rather than a schema-name difference)
+        # and diffs every object the extension owns - any nonempty diff
+        # fails the step. Not a make target (it's a standalone script, not
+        # `make test`), so invoked directly here.
+        run: bin/compare_fresh_vs_update 0.9.6
 
   # Proves count_nulls survives a BINARY pg_upgrade (in-place catalog
   # migration to a newer PostgreSQL major). Installs 0.9.6 on the oldest
