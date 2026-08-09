@@ -82,7 +82,7 @@ BEGIN
       FROM pg_available_extensions WHERE name = 'count_nulls';
   ELSE
     RAISE EXCEPTION
-      'count_nulls.test_existing_deploy must be ''filesystem'' or ''pgtle'', got ''%'''
+      $$count_nulls.test_existing_deploy must be 'filesystem' or 'pgtle', got '%'$$
       , v_deploy
     ;
   END IF;
