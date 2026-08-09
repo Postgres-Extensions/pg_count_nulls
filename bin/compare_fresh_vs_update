@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+#
+# compare_fresh_vs_update - structurally compare every object the count_nulls
+# extension owns between a FRESH install (CREATE EXTENSION at current) and an
+# UPDATED one (CREATE EXTENSION at FROM_VERSION, then ALTER EXTENSION
+# UPDATE) - or, with EXISTING_DB, an already-populated database however it
+# was produced. A fixed pgTAP expected-output suite (see TEST_LOAD_SOURCE in
+# the Makefile) only proves the specific behaviors it happens to assert
+# still work - it does not prove an update script left object
+# definitions/comments/ACLs BYTE-FOR-BYTE identical to a fresh install of
+# the same version. This catches divergence classes a fixed suite doesn't
+# already know to test for.
+#
+# Modeled on the manual technique used in Postgres-Extensions/cat_tools#46,
+# which found a real bug this way (a pre-0.2.2 update path left
+# `EXECUTE PROCEDURE` hardcoded in a trigger body that fresh installs had
+# already updated to `EXECUTE FUNCTION`). Unlike that PR, this is committed,
+# reusable tooling rather than a one-off manual diff.
+#
+# Postgres-Extensions/cat_tools#67 proposes generalizing this exact
+# capability - "list every object an extension owns, with each object's
+# actual definition" - into a real, user-facing cat_tools feature, not
+# test-only plumbing tied to one extension's update path. If that lands,
+# this script's object-discovery-and-rendering logic (query() below, and
+# the per-kind comparisons) is a natural candidate to
+# reimplement on top of it rather than staying a bespoke,
+# count_nulls-specific copy.
+#
+# What's compared, per object the extension owns (discovered live via
+# pg_depend - see query(), not a hardcoded object list, so a
+# newly added function is automatically covered without editing this
+# script): pg_get_functiondef() (full definition: schema, args, body,
+# volatility, strictness - everything), its comment (obj_description), and
+# its ACL (proacl). count_nulls currently ships only functions/triggers, no
+# views - the doc this is modeled on also compares pg_get_viewdef/type
+# labels/extension membership for extensions that have those; add a query
+# for the relevant catalog (pg_class for views, pg_type for types, ...) the
+# same way if count_nulls ever grows one.
+#
+# USAGE: bin/compare_fresh_vs_update [FROM_VERSION] [EXISTING_DB]
+#   FROM_VERSION - the update origin (default: 0.9.6, the oldest version
+#                  count_nulls still ships a full install script for).
+#                  Ignored when EXISTING_DB is given - that database's
+#                  history is whatever already produced it.
+#   EXISTING_DB  - compare a fresh install against this ALREADY-POPULATED
+#                  database instead of creating+updating a scratch one
+#                  (default: none - create our own scratch "updated"
+#                  database, as described below). Lets callers that
+#                  produced their update/upgrade result some other way -
+#                  e.g. bin/test_existing's real binary pg_upgrade path via
+#                  the pg-upgrade-test CI job - reuse this same comparison
+#                  without this script re-deriving that database itself.
+#                  The caller owns EXISTING_DB's lifecycle: it is never
+#                  created, updated, or dropped here, only queried. Because
+#                  EXISTING_DB was installed independently (via
+#                  test/helpers/create_test_schema.sql, generating its own
+#                  random schema), the schema used for this run's fresh
+#                  install is DISCOVERED from EXISTING_DB itself instead of
+#                  freshly generated - same lookup
+#                  test/helpers/find_test_schema.sql uses, inlined here for
+#                  the same reason this script shells out to psql per
+#                  statement rather than `\i`-ing psql helper files - so
+#                  both sides of the comparison still land in the SAME
+#                  schema.
+#
+# Absent EXISTING_DB (the ordinary "scratch-vs-scratch" mode), this script's
+# only job is proving fresh-vs-update PARITY - do the two installs produce
+# identical object definitions/comments/ACLs - not exercising schema
+# qualification or quoting (that's test/helpers/create_test_schema.sql's
+# job, used by the rest of the suite). Both installs are therefore a plain,
+# unqualified `CREATE EXTENSION count_nulls`, landing wherever the
+# session's default search_path resolves (ordinarily `public`) rather than
+# a randomly generated schema: both installs still land in the SAME place
+# by construction (both default the same way), which is all
+# pg_get_functiondef()'s schema-qualified output needs to avoid a spurious
+# schema-name difference. No schema is created, and no stale-schema sweep
+# runs, in this mode: this script always creates brand-new scratch
+# databases via createdb, which fails loudly if a same-named one already
+# exists - an already-adequate safety net - and drops them on exit, so
+# there's no cross-run schema staleness path the way there is for the main
+# suite's persistently-reused test database.
+#
+# EXISTING_DB mode is different: that database's schema was chosen by
+# whatever created it (test/helpers/create_test_schema.sql, via
+# bin/test_existing's prepare-old) - this script has no say in that and
+# must discover and reuse that exact schema for its own fresh-install side
+# of the comparison, or the diff would show a spurious schema-name
+# difference instead of isolating real divergence. CREATE SCHEMA + CREATE
+# EXTENSION ... WITH SCHEMA is used for that fresh install (never `SET
+# search_path` beforehand): mutating search_path ahead of CREATE EXTENSION
+# would let an install succeed via a coincidentally arranged search_path,
+# masking the install script secretly depending on unqualified name
+# resolution during install - see test/helpers/create_test_schema.sql's
+# header comment for the fuller version of this reasoning.
+#
+# Exits nonzero (and prints a real diff) on ANY difference. Scratch
+# database(s) this script created itself are dropped on exit regardless of
+# outcome; an EXISTING_DB passed in is left untouched.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+from_version=${1:-0.9.6}
+# Doubling any embedded single quote before it goes into a SQL string
+# literal below (VERSION '...') - CI always passes the fixed literal
+# 0.9.6, but the script documents FROM_VERSION as a general argument, so a
+# future caller-supplied value containing a quote shouldn't be able to
+# break out of the literal.
+from_version_lit="${from_version//\'/\'\'}"
+existing_db=${2:-}
+
+fresh_db=compare_fresh_vs_update_fresh
+update_db=${existing_db:-compare_fresh_vs_update_updated}
+fresh_snapshot=$(mktemp)
+update_snapshot=$(mktemp)
+
+cleanup() {
+  dropdb --if-exists "$fresh_db"
+  # Only drop update_db if we created it ourselves - an EXISTING_DB belongs
+  # to the caller (e.g. the real pg_upgraded database bin/test_existing is
+  # still using) and must survive this script running.
+  if [ -z "$existing_db" ]; then
+    dropdb --if-exists "$update_db"
+  fi
+  rm -f "$fresh_snapshot" "$update_snapshot"
+}
+trap cleanup EXIT
+
+# psql only interpolates :"var"-style variables when reading a script (-f
+# or stdin), NOT inside a -c command string - confirmed directly (a bare
+# :"schema" inside a -c string reaches the server un-substituted and is a
+# syntax error). Every use below is therefore a plain double-quoted SQL
+# identifier/literal built directly in bash instead.
+
+if [ -n "$existing_db" ]; then
+  # Discover the schema EXISTING_DB's count_nulls actually lives in - same
+  # validation test/helpers/find_test_schema.sql performs (hard failure,
+  # not a pgTAP-style assertion, on anything but exactly one match), run
+  # against EXISTING_DB instead of `\i`'d in a shared session. Two separate
+  # invocations, not one: a DO block's own "DO" command-completion tag
+  # prints to stdout even under -tA (confirmed directly - unlike a RAISE
+  # NOTICE, which goes to stderr), so combining the validation and the
+  # SELECT in one invocation would capture "DO" as a spurious first line
+  # of $schema. psql also does NOT interpolate variables inside
+  # dollar-quoted strings (see test/helpers/create_test_schema.sql's header
+  # comment for the fuller explanation), so this can't embed $existing_db
+  # in the RAISE EXCEPTION text below - the caller already knows which
+  # EXISTING_DB it passed.
+  psql -d "$existing_db" -v ON_ERROR_STOP=1 -c "
+DO \$\$
+DECLARE
+  v_count int := (SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'count_nulls test schema %');
+BEGIN
+  IF v_count <> 1 THEN
+    RAISE EXCEPTION
+      'expected exactly one schema matching ''count_nulls test schema %%'', found %'
+      , v_count;
+  END IF;
+END
+\$\$;" >/dev/null
+  schema=$(psql -d "$existing_db" -tAc "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'count_nulls test schema %'")
+
+  # Every use below is a plain double-quoted SQL identifier built directly
+  # in bash, doubling any embedded double quote the SQL spec's own
+  # identifier-quoting rule requires (not expected in the generated name
+  # itself, which is prefix+hex, but this keeps the quoting correct
+  # regardless).
+  schema_ident="\"${schema//\"/\"\"}\""
+fi
+
+# query(): every object pg_depend records as owned by the
+# count_nulls extension (deptype 'e'), restricted to pg_proc for now (see
+# the header comment on extending this). Ordered by name/args so the two
+# snapshots line up for a textual diff regardless of OID assignment order,
+# which differs between a fresh install and an update.
+query() {
+  cat <<'SQL'
+SELECT
+  '-- ' || p.oid::regprocedure::text || E'\n'
+  || pg_get_functiondef(p.oid) || E'\n'
+  || '-- comment: ' || coalesce(obj_description(p.oid, 'pg_proc'), '(none)') || E'\n'
+  || '-- acl: ' || coalesce(p.proacl::text, '(default)') || E'\n'
+FROM pg_depend d
+JOIN pg_extension x ON d.refobjid = x.oid AND x.extname = 'count_nulls'
+JOIN pg_proc p ON d.objid = p.oid AND d.classid = 'pg_proc'::regclass
+WHERE d.deptype = 'e'
+ORDER BY p.proname, p.oid::regprocedure::text;
+SQL
+}
+
+# install_extension_scratch(): scratch-vs-scratch mode only (see the header
+# comment above) - a plain, unqualified CREATE EXTENSION, landing wherever
+# the session's default search_path resolves. No schema is created and no
+# stale-schema sweep runs: this script's own createdb call above already
+# guarantees $db is a genuinely fresh, empty database (createdb fails
+# loudly if a same-named one already exists), so there's nothing left for
+# a schema-level cleanup to guard against here.
+install_extension_scratch() {
+  local db=$1 version_clause=$2
+  psql -d "$db" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION count_nulls$version_clause;"
+}
+
+# install_extension_matching_schema(): EXISTING_DB mode only - installs
+# count_nulls into $db (always the fresh_db this script created itself,
+# never EXISTING_DB) under the schema discovered above from EXISTING_DB,
+# after sweeping any stale same-prefixed schema left behind by a prior
+# crashed run of this script (a narrower case than
+# test/helpers/create_test_schema.sql's own sweep, which guards a
+# persistent, reused database: this script's own scratch databases are
+# already dropped by the cleanup trap above on every exit path, so a
+# leftover schema here can only come from a run that never reached that
+# trap at all, e.g. a killed process). Both statements go through a SINGLE
+# -c, not one -c each: multiple -c/-f options in one psql invocation only
+# became supported in PostgreSQL 10 (psql before that silently ran only the
+# LAST one given) - confirmed the hard way against this repo's own oldest
+# supported major (9.4), where splitting these into separate -c options
+# silently dropped the cleanup DO block, leaving CREATE EXTENSION's WITH
+# SCHEMA targeting a schema that was never created ("ERROR: schema ... does
+# not exist"). A single -c string, semicolon-separated, has always run
+# every statement it contains, on every supported version.
+install_extension_matching_schema() {
+  local db=$1 version_clause=$2
+  psql -d "$db" -v ON_ERROR_STOP=1 -c "
+DO \$\$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN SELECT nspname FROM pg_namespace WHERE nspname LIKE 'count_nulls test schema %' LOOP
+    EXECUTE format('DROP SCHEMA %I CASCADE', r.nspname);
+  END LOOP;
+END
+\$\$;
+CREATE SCHEMA $schema_ident;
+CREATE EXTENSION count_nulls WITH SCHEMA $schema_ident$version_clause;
+"
+}
+
+createdb "$fresh_db"
+if [ -n "$existing_db" ]; then
+  install_extension_matching_schema "$fresh_db" ""
+else
+  install_extension_scratch "$fresh_db" ""
+fi
+
+if [ -z "$existing_db" ]; then
+  createdb "$update_db"
+  install_extension_scratch "$update_db" " VERSION '$from_version_lit'"
+  psql -d "$update_db" -v ON_ERROR_STOP=1 -c "SET client_min_messages = WARNING; ALTER EXTENSION count_nulls UPDATE"
+fi
+
+psql -d "$fresh_db"  -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$fresh_snapshot"
+psql -d "$update_db" -tA -v ON_ERROR_STOP=1 -c "$(query)" > "$update_snapshot"
+
+source_desc="$from_version->current update"
+[ -n "$existing_db" ] && source_desc="'$existing_db'"
+
+if diff -u "$fresh_snapshot" "$update_snapshot"; then
+  echo "OK: fresh install and $source_desc produce IDENTICAL object definitions/comments/ACLs"
+else
+  echo "FAIL: $source_desc diverges from a fresh install of the same version - see diff above" >&2
+  exit 1
+fi
