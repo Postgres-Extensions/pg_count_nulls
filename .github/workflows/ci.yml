@@ -408,11 +408,19 @@ jobs:
     # behind EACH OTHER instead of behind their own prior runs for this job.
     # See the top-of-file CI PRIORITY comment for the low-priority lane
     # scheme this implements.
+    #
+    # The high-priority group includes ${{ matrix.pg }}: without it, every
+    # leg of THIS SAME push's own matrix would collide on one shared group
+    # name and cancel-in-progress would cancel siblings, not just a prior
+    # push's run - the exact opposite of "always runs the full matrix
+    # either way". The low-priority group deliberately has NO such
+    # per-leg split: cancel-in-progress is false there, so a shared name
+    # only serializes legs through the lane instead of cancelling them.
     concurrency:
       group: >-
         ${{ needs.changes.outputs.priority == 'low'
           && format('ci-test-lowprio-{0}', needs.changes.outputs.lane)
-          || format('ci-test-{0}', github.event.pull_request.number || github.sha) }}
+          || format('ci-test-{0}-{1}', github.event.pull_request.number || github.sha, matrix.pg) }}
       cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
     strategy:
       matrix:
@@ -506,12 +514,14 @@ jobs:
     # this is a heavy job, and a draft author doesn't need a real binary
     # pg_upgrade re-proven on every push while still iterating.
     if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
-    # "ci-pgupgrade-" prefix - see the `test` job's concurrency comment above.
+    # "ci-pgupgrade-" prefix, matrix.old_pg/new_pg split - see the `test`
+    # job's concurrency comment above (currently a single-combination
+    # matrix, but split the same way regardless in case that ever changes).
     concurrency:
       group: >-
         ${{ needs.changes.outputs.priority == 'low'
           && format('ci-pgupgrade-lowprio-{0}', needs.changes.outputs.lane)
-          || format('ci-pgupgrade-{0}', github.event.pull_request.number || github.sha) }}
+          || format('ci-pgupgrade-{0}-{1}-{2}', github.event.pull_request.number || github.sha, matrix.old_pg, matrix.new_pg) }}
       cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
     strategy:
       matrix:
@@ -656,12 +666,13 @@ jobs:
     # draft PR: this is a heavy job, and a draft author doesn't need the
     # pg_tle deployment path re-proven on every push while still iterating.
     if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
-    # "ci-pgtle-" prefix - see the `test` job's concurrency comment above.
+    # "ci-pgtle-" prefix, matrix.pg split - see the `test` job's concurrency
+    # comment above.
     concurrency:
       group: >-
         ${{ needs.changes.outputs.priority == 'low'
           && format('ci-pgtle-lowprio-{0}', needs.changes.outputs.lane)
-          || format('ci-pgtle-{0}', github.event.pull_request.number || github.sha) }}
+          || format('ci-pgtle-{0}-{1}', github.event.pull_request.number || github.sha, matrix.pg) }}
       cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
     strategy:
       matrix:
