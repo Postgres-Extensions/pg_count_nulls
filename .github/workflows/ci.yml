@@ -353,6 +353,13 @@ jobs:
 
   lint:
     name: 🧹 SQL lint
+    # Deliberately no docs_only/needs gate, unlike the heavy jobs below: a
+    # plain title/description edit (no base change) now triggers a real
+    # run of this job too, since `edited` was added to `pull_request.types`
+    # for the escalate check. Accepted rather than fixed - lint is cheap
+    # (a checkout + `make lint`, no PostgreSQL container), and gating it
+    # would need the SAME docs_only computation the `changes` job already
+    # does, on a job that's meant to be the cheap always-on baseline.
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
