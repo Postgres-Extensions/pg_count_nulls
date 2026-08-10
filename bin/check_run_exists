@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 #
-# check_run_exists - Report whether SHA already has a check run named NAME
-# (any conclusion) in REPO, via the Checks API. Extracted from ci.yml's
-# `changes` job "escalate" step, which uses this to decide whether a base
-# retarget (the gh-stack-promotion signal described in ci.yml's top-of-file
-# CI PRIORITY comment) has anything left to prove: if an all-checks-passed
-# run already covers this exact SHA, escalating again would just re-run
-# something whose result is already known.
+# check_run_exists - Report whether SHA already has a COMPLETED check run
+# named NAME (any conclusion) in REPO, via the Checks API. Extracted from
+# ci.yml's `changes` job "escalate" step, which uses this to decide whether
+# a base retarget (the gh-stack-promotion signal described in ci.yml's
+# top-of-file CI PRIORITY comment) has anything left to prove: if an
+# all-checks-passed run already covers this exact SHA, escalating again
+# would just re-run something whose result is already known.
+#
+# Deliberately filters on status == "completed", not just name: GitHub
+# creates a job's check-run (status "queued") as soon as its workflow run
+# starts, well BEFORE its `needs:` are satisfied - so all-checks-passed's
+# own check-run exists in "queued"/"in_progress" state for this SHA's
+# entire matrix runtime, which for a low-priority push (queue: max) can be
+# a long time. Without this filter, a retarget arriving while that
+# low-priority run is still queued would see a "queued" all-checks-passed
+# and wrongly conclude escalation has nothing to gain - exactly the
+# rebase-cascade-then-promoted-to-bottom-of-stack scenario this feature
+# exists for, not an edge case.
 #
 # Prints "true" or "false" to stdout. Requires GH_TOKEN in the environment
 # (as the `gh` CLI itself does) and network access to GitHub's API - so,
@@ -21,7 +32,7 @@ sha="$2"
 name="$3"
 
 existing=$(gh api "repos/$repo/commits/$sha/check-runs" --paginate \
-  --jq "[.check_runs[] | select(.name == \"$name\")]" 2>/dev/null || echo '[]')
+  --jq "[.check_runs[] | select(.name == \"$name\" and .status == \"completed\")]" 2>/dev/null || echo '[]')
 count=$(echo "$existing" | jq 'length')
 
 if [ "$count" -gt 0 ]; then
