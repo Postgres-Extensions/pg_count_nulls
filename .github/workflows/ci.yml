@@ -1,40 +1,9 @@
 # ===========================================================================
-# Test strategy
-#
-# count_nulls can be arrived at several ways, each of which can break
-# differently, so each is exercised by its own job below:
-#
-#   test                   -- FRESH install: CREATE EXTENSION at the current
-#                              version, across every supported PostgreSQL
-#                              major. Also proves the IN-PLACE extension
-#                              update path (CREATE EXTENSION at 0.9.6, then
-#                              ALTER EXTENSION UPDATE - same PostgreSQL, no
-#                              pg_upgrade) in the same job/matrix, rather
-#                              than a dedicated job: a load mode is just an
-#                              input the same assertions run against, not a
-#                              real environment difference, so giving it its
-#                              own job would only duplicate this job's own
-#                              per-PG-version container/checkout setup for
-#                              no added confidence.
-#   pg-upgrade-test         -- BINARY pg_upgrade: install 0.9.6 on the OLD
-#                              PostgreSQL floor (the same META.json-derived
-#                              floor the `changes` job's supported_pg uses -
-#                              see its floor_pg output), then binary-upgrade
-#                              the cluster to the newest supported major
-#                              (changes job's newest_pg). A single leg (not
-#                              the full PG matrix - by far the most
-#                              expensive job here, installing two full
-#                              PostgreSQL majors and running the real
-#                              pg_upgrade binary), which via twin databases
-#                              migrated by the SAME binary pg_upgrade call
-#                              compares BOTH update-vs-pg_upgrade orderings
-#                              a real user could hit - see the job's own
-#                              comment for why one floor is enough to cover
-#                              both.
-#   pg-tle-test             -- pg_tle DEPLOYMENT: fresh install AND the
-#                              0.9.6 -> current update path, both registered
-#                              through AWS pg_tle's database-backed catalog
-#                              instead of a filesystem .control file.
+# See .github/workflows/README.md for the full job list (what `test`,
+# `pg-upgrade-test`, and `pg-tle-test` each prove), the docs-only/draft-PR
+# reductions, and the priority-lane design - this comment covers only what
+# isn't already there, or what's specific to this workflow file's own
+# mechanics.
 #
 # During testing we always install into a freshly, randomly generated
 # schema (see test/install/load.sql; test/README.md covers how
@@ -51,9 +20,9 @@
 # in full; `test`'s matrix drops to just the newest supported PostgreSQL
 # major (see its own comment) instead of running full or being skipped
 # outright, since it's cheap per-leg and a draft author still wants signal
-# on every push; every other heavy job (`pg-tle-test`, `pg-upgrade-test`)
-# is skipped entirely via an added `&& github.event.pull_request.draft !=
-# true` on its existing `if:`. None of this applies to a `push` event (e.g.
+# on every push; the other heavy jobs (`pg-tle-test`, `pg-upgrade-test`)
+# are skipped entirely via an added `&& github.event.pull_request.draft !=
+# true` on their existing `if:`. None of this applies to a `push` event (e.g.
 # the post-merge run on master) or a non-draft PR, both of which always run
 # the full suite exactly as before. `pull_request.types` below includes
 # `ready_for_review` specifically so marking a draft PR ready retriggers
@@ -61,54 +30,14 @@
 # fires) instead of leaving the reduced draft-time result on the PR's last
 # commit as its current status until some later real push.
 #
-# CI PRIORITY: a `gh stack rebase` cascade pushes to every PR above the one
-# actually being changed, purely to move it onto a new base - the PR's own
-# diff (what it actually contributes) is unchanged. Running that at the
-# same priority as real new commits means a burst of cascade pushes can
-# crowd out the runner capacity a genuinely active push needs for fast
-# feedback. `changes` tells the two apart via a base-independent content
-# hash (bin/patch_id_hash, robust to rebase-induced context shifts - see
-# its own comment - persisted per-PR across pushes via actions/cache since
-# GitHub Actions has no other cross-run memory, compare-then-persist logic
-# in bin/ci_priority): a synchronize push whose hash matches the last one
-# observed for this PR gets `changes.outputs.priority = low` instead of the
-# default `high`.
-#
-# `test`, `pg-upgrade-test`, and `pg-tle-test` each exist as TWO job IDs
-# (e.g. `test` / `test-lowprio`) rather than one job with a
-# priority-conditional `if:`/`concurrency:` - see each job's own comment for
-# why the split itself is necessary (in short: `queue: max`, the mechanism
-# that lets the low-priority side QUEUE instead of cancelling, cannot
-# combine with a `cancel-in-progress` that could evaluate `true` at
-# runtime, so the low-priority variant needs a literal, unconditional
-# `cancel-in-progress: false` living in a job a real push can never enter).
-# The high-priority variant (`if: needs.changes.outputs.priority != 'low'`)
-# keeps a per-PR-per-leg concurrency group and unconditional
-# `cancel-in-progress: true`, same as before there were two job IDs. The
-# low-priority variant (`if: needs.changes.outputs.priority == 'low'`) uses
-# a group keyed by the MATRIX LEG ITSELF (e.g.
-# `format('ci-test-lowprio-{0}', matrix.pg)`), shared across ALL PRs' low-
-# priority pushes for that same leg value, plus `queue: max` (up to 100
-# runs queue in that group instead of all but one being cancelled). This
-# preserves full within-push matrix parallelism (each leg queues
-# independently) while still being "low priority": a low-priority run only
-# ever competes with OTHER low-priority runs of that exact same leg,
-# repo-wide - never with a real push's high-priority run, and never
-# blocking unrelated legs of its own push. It still gets the FULL matrix
-# either way, just possibly later - a rebase CAN break something the diff
-# itself didn't touch, and this repo won't merge without a clean run
-# regardless.
-#
-# `edited` is in `pull_request.types` so a base retarget (the signal gh
-# stack sends when this PR is promoted to the bottom of its stack - the
-# next one due to merge) can be caught by the `escalate` step (via
-# bin/check_run_exists) and bumped to an immediate high-priority run
-# bypassing whichever priority variant its last push landed in, UNLESS a
-# full run already exists for that exact head SHA (checked via the Checks
-# API), in which case there's nothing to gain by re-running it.
-# `ready_for_review` gets the same escalation unconditionally (no
-# existing-run check): its prior run, if any, was necessarily the reduced
-# draft-time one above, which doesn't count as "already had one".
+# See README.md's "Priority lanes" and "Escalation" sections for why a
+# `gh stack rebase` cascade is routed to a separate, lower-priority job ID
+# instead of competing with real work, and for the base-retarget/
+# `ready_for_review` escalation rules. Each `test`/`pg-upgrade-test`/
+# `pg-tle-test` (-lowprio) job's own comment carries the mechanics specific
+# to why ITS `if:`/`concurrency:` block needs two literal job IDs; the
+# `escalate` and `diff` steps below carry the mechanics specific to this
+# job's own escalation/priority logic.
 # ===========================================================================
 name: CI
 on:
@@ -163,10 +92,14 @@ jobs:
 
       - name: Base retargeted onto a new branch? Check whether this SHA already has a full run
         # Fires only for `edited` WITH a base change - the gh-stack-promotion
-        # signal described at the top of this file. A plain title/body edit
-        # also fires `edited` but leaves `github.event.changes.base` absent,
-        # so it's excluded here and falls through to the diff step's
-        # edited-with-nothing-to-do branch below.
+        # signal described in README.md's Escalation section. A plain
+        # title/body edit also fires `edited` but leaves
+        # `github.event.changes.base` absent, so it's excluded here and
+        # falls through to the diff step's edited-with-nothing-to-do branch
+        # below. `ready_for_review` needs no equivalent check here: it isn't
+        # `edited`, so it never enters this step at all - the diff step's
+        # default (below) already gives it `priority: high` unconditionally,
+        # since only a `synchronize` push can ever be downgraded to low.
         id: escalate
         if: >-
           github.event_name == 'pull_request' &&
@@ -258,7 +191,7 @@ jobs:
           # actual contribution, independent of what it's based on) matches
           # the last one observed for this PR is a pure gh-stack rebase
           # cascade, not new work - safe to route to the low-priority job
-          # IDs (see the top-of-file CI PRIORITY comment). Real new
+          # IDs (see README.md's Priority lanes section). Real new
           # commits, and this PR's first appearance (nothing to compare
           # against yet), keep the high priority set above. bin/ci_priority
           # always overwrites /tmp/prev_patch_id with this push's patch-id,
@@ -383,9 +316,9 @@ jobs:
     # behind EACH OTHER instead of behind their own prior runs for this job.
     #
     # This is the HIGH-priority job ID - see test-lowprio right below for its
-    # low-priority counterpart, and the top-of-file CI PRIORITY comment for
-    # why the two are separate job IDs rather than one job with a
-    # priority-conditional `if:` here. The group includes ${{ matrix.pg }}:
+    # low-priority counterpart, and for why the two are separate job IDs
+    # rather than one job with a priority-conditional `if:` here. The group
+    # includes ${{ matrix.pg }}:
     # without it, every leg of THIS SAME push's own matrix would collide on
     # one shared group name and cancel-in-progress would cancel siblings,
     # not just a prior push's run - the exact opposite of "always runs the
@@ -437,7 +370,7 @@ jobs:
         run: bin/compare_fresh_vs_update 0.9.6
 
   # LOW-priority counterpart of `test` above - same steps/matrix, only the
-  # `if:`/`concurrency:` differ. See the top-of-file CI PRIORITY comment for
+  # `if:`/`concurrency:` differ. See README.md's Priority lanes section for
   # why a gh-stack rebase cascade is routed here instead of to `test`, and
   # why that requires a genuinely separate job ID rather than a runtime
   # branch inside one job: `queue: max` (letting up to 100 runs QUEUE in a
@@ -456,9 +389,10 @@ jobs:
   # real leg value queues against other runs of that SAME leg, repo-wide,
   # while still leaving every OTHER leg of this push's own matrix to queue
   # independently in its own group - preserving "still gets the FULL matrix
-  # either way" from the top-of-file comment, which the previous single-
-  # hashed-lane design didn't (confirmed live: it collapsed a whole push's
-  # matrix onto one shared group and cancelled most of its own legs).
+  # either way" from README.md's Priority lanes section, which the
+  # previous single-hashed-lane design didn't (confirmed live: it collapsed
+  # a whole push's matrix onto one shared group and cancelled most of its
+  # own legs).
   test-lowprio:
     needs: [changes]
     if: needs.changes.outputs.priority == 'low' && needs.changes.outputs.docs_only != 'true'
@@ -544,10 +478,8 @@ jobs:
     # job's concurrency comment above (currently a single-combination
     # matrix, but split the same way regardless in case that ever changes).
     # This is the HIGH-priority job ID; see pg-upgrade-test-lowprio below for
-    # its low-priority counterpart, and the top-of-file CI PRIORITY comment
-    # for why splitting into two job IDs (rather than one job with a
-    # priority-conditional `if:` here) is what makes `queue: max` usable on
-    # the low-priority side at all.
+    # its low-priority counterpart, and for why splitting into two job IDs
+    # is what makes `queue: max` usable on the low-priority side at all.
     concurrency:
       group: ci-pgupgrade-${{ github.event.pull_request.number || github.sha }}-${{ matrix.old_pg }}-${{ matrix.new_pg }}
       cancel-in-progress: true
@@ -662,8 +594,8 @@ jobs:
   # LOW-priority counterpart of pg-upgrade-test above - same steps/matrix,
   # only the `if:`/`concurrency:` differ. See test-lowprio's comment (right
   # after `test` above) for why this needs to be a separate job ID rather
-  # than a runtime branch inside pg-upgrade-test itself, and the top-of-file
-  # CI PRIORITY comment for the overall scheme. Group keyed by
+  # than a runtime branch inside pg-upgrade-test itself, and README.md's
+  # Priority lanes section for the overall scheme. Group keyed by
   # matrix.old_pg + matrix.new_pg alone (no PR number) - shared across every
   # PR's low-priority pg-upgrade-test pushes for that same leg combination,
   # not the small fixed hashed-lane set the previous design used.
@@ -738,10 +670,9 @@ jobs:
     if: needs.changes.outputs.priority != 'low' && needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
     # "ci-pgtle-" prefix, matrix.pg split - see the `test` job's concurrency
     # comment above. This is the HIGH-priority job ID; see
-    # pg-tle-test-lowprio below for its low-priority counterpart, and the
-    # top-of-file CI PRIORITY comment for why splitting into two job IDs
-    # (rather than one job with a priority-conditional `if:` here) is what
-    # makes `queue: max` usable on the low-priority side at all.
+    # pg-tle-test-lowprio below for its low-priority counterpart, and for
+    # why splitting into two job IDs is what makes `queue: max` usable on
+    # the low-priority side at all.
     concurrency:
       group: ci-pgtle-${{ github.event.pull_request.number || github.sha }}-${{ matrix.pg }}
       cancel-in-progress: true
@@ -888,9 +819,9 @@ jobs:
   # LOW-priority counterpart of pg-tle-test above - same steps/matrix, only
   # the `if:`/`concurrency:` differ. See test-lowprio's comment (right after
   # `test`, near the top of this file) for why this needs to be a separate
-  # job ID rather than a runtime branch inside pg-tle-test itself, and the
-  # top-of-file CI PRIORITY comment for the overall scheme. Group keyed by
-  # matrix.pg alone (no PR number) - shared across every PR's low-priority
+  # job ID rather than a runtime branch inside pg-tle-test itself, and
+  # README.md's Priority lanes section for the overall scheme. Group keyed
+  # by matrix.pg alone (no PR number) - shared across every PR's low-priority
   # pg-tle-test pushes for that same PG major, not the small fixed
   # hashed-lane set the previous design used.
   pg-tle-test-lowprio:

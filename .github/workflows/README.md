@@ -63,22 +63,22 @@ else, including this PR's first push, is `priority: high`.
 
 `test`, `pg-upgrade-test`, and `pg-tle-test` each exist as TWO job IDs
 (e.g. `test` / `test-lowprio`), not one job with a priority-conditional
-`concurrency:` block - `queue: max` (letting up to 100 runs queue in a
-concurrency group instead of cancelling all but one) cannot combine with a
-`cancel-in-progress` that could evaluate `true` at runtime, so the
-low-priority side needs a literal, unconditional `cancel-in-progress:
-false` living in a job a real push can never enter:
+`concurrency:` block:
 
-- **High-priority** job: `if: priority != 'low'`, concurrency group keyed
-  per-PR-per-matrix-leg, `cancel-in-progress: true`. Behaves exactly like
-  before there were two job IDs.
-- **Low-priority** job: `if: priority == 'low'`, concurrency group keyed
-  by the **matrix leg alone** (e.g. `ci-test-lowprio-<pg>`) - shared
-  across every PR's low-priority pushes for that same leg, repo-wide -
-  `cancel-in-progress: false`, `queue: max`. Each leg of a single push
-  still queues independently, so a whole push's matrix isn't collapsed
-  onto one shared slot; it just competes only with other low-priority
-  runs of that exact same leg, never with real work.
+- **High-priority** job: concurrency group keyed per-PR-per-matrix-leg,
+  `cancel-in-progress: true` - behaves exactly like before there were two
+  job IDs.
+- **Low-priority** job: concurrency group keyed by the **matrix leg
+  alone** (e.g. `ci-test-lowprio-<pg>`), shared across every PR's
+  low-priority pushes for that same leg, repo-wide, `cancel-in-progress:
+  false` + `queue: max` - so a low-priority run only ever competes with
+  other low-priority runs of that exact same leg, never with real work,
+  while still running its own push's full matrix.
+
+See `test-lowprio`'s own comment in `ci.yml` for exactly why this split
+into two literal job IDs is necessary (in short: `queue: max` can't
+combine with a `cancel-in-progress` that could evaluate `true` at
+runtime).
 
 Either way, the full matrix still eventually runs - a rebase CAN break
 something the diff itself didn't touch, and this repo won't merge without
