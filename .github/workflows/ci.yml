@@ -125,7 +125,6 @@ jobs:
     permissions:
       contents: read
       checks: read    # escalate step: has this SHA already got a full run?
-      actions: write  # escalate step: cancel a superseded low-priority run
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
       supported_pg: ${{ steps.pg.outputs.supported_pg }}
@@ -166,29 +165,6 @@ jobs:
           else
             echo "escalate=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Cancel a superseded low-priority run for this SHA
-        # An escalation (base retarget, or draft->ready below) is about to
-        # trigger a fresh high-priority run for this exact SHA; a
-        # low-priority run still queued/running for the SAME SHA would just
-        # duplicate that work, so kill it first. ready_for_review always
-        # qualifies (unconditionally, no escalate check) since its prior
-        # run, if any, was necessarily the reduced draft-time one - never
-        # worth keeping once the PR is no longer a draft.
-        if: >-
-          steps.escalate.outputs.escalate == 'true' ||
-          github.event.action == 'ready_for_review'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          gh api "repos/$REPO/actions/workflows/ci.yml/runs" --paginate \
-            --jq ".workflow_runs[] | select(.head_sha == \"$SHA\" and .status != \"completed\" and .id != ${{ github.run_id }}) | .id" \
-          | while read -r run_id; do
-              echo "Cancelling superseded run $run_id for $SHA"
-              gh api -X POST "repos/$REPO/actions/runs/$run_id/cancel" || true
-            done
 
       - name: Restore this PR's previously observed content patch-id
         id: patchid-restore
@@ -413,9 +389,22 @@ jobs:
     # leg of THIS SAME push's own matrix would collide on one shared group
     # name and cancel-in-progress would cancel siblings, not just a prior
     # push's run - the exact opposite of "always runs the full matrix
-    # either way". The low-priority group deliberately has NO such
-    # per-leg split: cancel-in-progress is false there, so a shared name
-    # only serializes legs through the lane instead of cancelling them.
+    # either way". Confirmed live: before this split, most legs of a normal
+    # (non-rebase) push came back cancelled instead of completing.
+    #
+    # KNOWN OPEN ISSUE, not yet resolved: the low-priority group deliberately
+    # has NO such per-leg split (that's the point - it's the shared,
+    # capped-concurrency lane), but GitHub Actions' default concurrency
+    # behavior only keeps ONE job PENDING per group at a time and CANCELS
+    # the previous pending one when a new one arrives (no `queue:` support
+    # for an expression, and `queue: max` can't combine with a
+    # conditionally-true `cancel-in-progress`) - confirmed live: pushing an
+    # unchanged-patch-id follow-up here cancelled most of this job's own
+    # matrix legs instead of queueing them, contradicting "still gets the
+    # FULL matrix either way" above for any push whose matrix has more legs
+    # than fit through instantaneously. Needs a real decision (accept a
+    # weaker/no concurrency cap, split low-priority into its own dedicated
+    # job with `queue: max`, or something else) before relying on this path.
     concurrency:
       group: >-
         ${{ needs.changes.outputs.priority == 'low'
