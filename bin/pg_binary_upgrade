@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# pg_binary_upgrade - Stop the OLD_PG cluster, create a fresh NEW_PG cluster
+# (with the SAME initdb options the old one used - pg_upgrade refuses to run
+# otherwise), binary pg_upgrade between them, then start the new cluster.
+# Extracted from pg-upgrade-test's own "Stop old cluster, binary pg_upgrade
+# ..., start new cluster" step so its high- and low-priority job-ID variants
+# (see ci.yml's top-of-file CI PRIORITY comment for why there are two) share
+# this instead of each carrying its own copy, and so it's runnable/debuggable
+# directly against a local two-cluster setup, outside CI.
+#
+# Requires INITDB_OPTS in the environment (the exact options the OLD_PG
+# cluster was created with) and both PostgreSQL majors already installed
+# on PATH under /usr/lib/postgresql/<major>/ (pg-start / apt-get, done by
+# earlier CI steps - not something this script sets up itself).
+#
+# On failure, dumps every pg_upgrade log found in either of its two
+# possible locations (PG17+ writes to $new_datadir/pg_upgrade_output.d/;
+# older versions write to CWD) before exiting non-zero, so the failure
+# reason is visible directly in the CI log instead of requiring a separate
+# artifact download.
+#
+# USAGE: bin/pg_binary_upgrade OLD_PG NEW_PG
+set -euo pipefail
+old_pg="$1"
+new_pg="$2"
+: "${INITDB_OPTS:?INITDB_OPTS must be set - the same options the old cluster used}"
+
+pg_ctlcluster "$old_pg" test stop
+pg_createcluster -p 5432 "$new_pg" test -- $INITDB_OPTS
+
+mkdir -p /tmp/pg_upgrade_logs
+chown postgres:postgres /tmp/pg_upgrade_logs
+
+su -c "cd /tmp/pg_upgrade_logs && /usr/lib/postgresql/$new_pg/bin/pg_upgrade \
+  -b /usr/lib/postgresql/$old_pg/bin \
+  -B /usr/lib/postgresql/$new_pg/bin \
+  -d /var/lib/postgresql/$old_pg/test \
+  -D /var/lib/postgresql/$new_pg/test \
+  -o '-c config_file=/etc/postgresql/$old_pg/test/postgresql.conf' \
+  -O '-c config_file=/etc/postgresql/$new_pg/test/postgresql.conf'" postgres \
+  || { find /tmp/pg_upgrade_logs \
+            "/var/lib/postgresql/$new_pg/test/pg_upgrade_output.d" \
+            -name '*.log' 2>/dev/null | sort | xargs -r tail -n +1; exit 1; }
+
+pg_ctlcluster "$new_pg" test start

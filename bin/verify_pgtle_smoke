@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# verify_pgtle_smoke - Smoke-test a count_nulls installation registered
+# purely through pg_tle (no filesystem control file) in DBNAME: confirm the
+# version pg_tle actually installed matches what this checkout's control
+# file declares as its own default_version, then call null_count() for
+# real. Extracted from pg-tle-test's own "Verify count_nulls works when
+# deployed via pg_tle" step so its high- and low-priority job-ID variants
+# (see ci.yml's top-of-file CI PRIORITY comment) share this instead of each
+# carrying its own copy.
+#
+# Run from the repository root (needs `make` to read
+# EXTENSION_count_nulls_VERSION) against a database where DBNAME already
+# has count_nulls CREATE EXTENSIONed via pg_tle.
+#
+# USAGE: bin/verify_pgtle_smoke DBNAME
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+db="$1"
+
+INSTALLED=$(psql -d "$db" -tAc "SELECT extversion FROM pg_extension WHERE extname = 'count_nulls'")
+# EXTENSION_count_nulls_VERSION (the .control file's default_version), NOT
+# PGXNVERSION (the PGXN distribution version, from META.in.json) - a
+# version-less CREATE EXTENSION installs whatever the control file's
+# default_version says, and count_nulls' is currently the 'stable'
+# pseudo-version, not the last real release. See RELEASE.md's note on
+# distribution vs. extension versions.
+EXPECTED=$(make -s print-EXTENSION_count_nulls_VERSION 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p')
+echo "installed=$INSTALLED expected=$EXPECTED"
+if [ -z "$INSTALLED" ] || [ -z "$EXPECTED" ] || [ "$INSTALLED" != "$EXPECTED" ]; then
+  echo "FAIL: installed='$INSTALLED' expected='$EXPECTED'"; exit 1
+fi
+
+RESULT=$(psql -d "$db" -v ON_ERROR_STOP=1 -tAc "SELECT null_count(1, NULL, 2)")
+echo "null_count(1, NULL, 2)=$RESULT"
+if [ "$RESULT" != "1" ]; then
+  echo "FAIL: expected null_count(1, NULL, 2) = 1, got '$RESULT'"; exit 1
+fi
