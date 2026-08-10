@@ -1,0 +1,13 @@
+#!/bin/sh
+# Emits, on stdout, a single hash representing the CONTENT of the diff
+# between $1 (base) and $2 (head) - via `git patch-id --stable`, not a plain
+# `git diff | sha256sum`. patch-id normalizes away the context-line shifts a
+# rebase causes when the base commit itself changes, so it comes out
+# IDENTICAL across a pure rebase that introduces no new content. That's the
+# signal CI uses to tell "just a gh-stack rebase cascade" apart from "real
+# new commits", and route the former to a low-priority runner lane instead
+# of treating it like fresh work.
+set -eu
+base="$1"
+head="$2"
+git diff "$base...$head" | git patch-id --stable | awk '{print $1}'
