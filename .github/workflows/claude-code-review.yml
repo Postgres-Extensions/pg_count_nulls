@@ -44,6 +44,11 @@ jobs:
       contents: read
       pull-requests: write   # post the review comments
       checks: read           # read sibling check-runs for the cost gate
+      # No narrower cache-write-only scope exists. Without this, the
+      # action's internal cache-save step silently fails ("Cache
+      # reservation failed: cache write denied: token has no writable
+      # scopes") while the job still reports success.
+      actions: write
     steps:
       # COST GATE: the paid Claude review is the last thing to run. Wait for the
       # PR head's OTHER check-runs to finish and only proceed if they are clean.
@@ -91,7 +96,7 @@ jobs:
         # Intentionally tracks the major-version tag (not a pinned SHA) so
         # upstream fixes are picked up automatically. No repository:/ref:
         # override - see the SECURITY comment at the top of this file for why.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -124,3 +129,10 @@ jobs:
           # provided, so no GitHub comments were posted"). Every review run
           # before this fix has been silently invisible on GitHub.
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          # A bare `prompt:` (no @claude mention) runs in "agent mode",
+          # which only starts MCP servers listed here, not whatever the
+          # invoked plugin's own frontmatter declares. Without this, the
+          # inline-comment tool never starts and every review silently
+          # falls back to one consolidated PR comment instead of real
+          # per-line inline comments.
+          claude_args: '--allowedTools mcp__github_inline_comment__create_inline_comment'
