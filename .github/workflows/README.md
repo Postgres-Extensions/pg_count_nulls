@@ -91,19 +91,23 @@ flowchart TD
   cmp -- "yes" --> low[priority: low]
   high --> hijob["high-priority job IDs\ngroup per PR+leg\ncancel-in-progress: true"]
   low --> lowjob["low-priority job IDs\ngroup per leg, shared across PRs\ncancel-in-progress: false, queue: max"]
-  retarget["base retarget (edited) /\nready_for_review"] --> esc{full run already\nexists for this SHA?}
+  retarget["base retarget (edited)"] --> esc{full run already\nexists for this SHA?}
   esc -- no --> hijob
   esc -- yes --> skip[nothing to escalate]
+  ready[ready_for_review] --> hijob
 ```
 
 ### Escalation
 
 A base retarget (the signal `gh stack` sends when a PR is promoted to the
-bottom of its stack, the next one due to merge) or `ready_for_review`
-bypasses whatever priority its last push landed in and forces an
-immediate high-priority run - unless a full `all-checks-passed` run
-already exists for that exact head SHA (`bin/check_run_exists`), in which
-case there's nothing to gain by re-running it.
+bottom of its stack, the next one due to merge) bypasses whatever
+priority its last push landed in and forces an immediate high-priority
+run - unless a full `all-checks-passed` run already exists for that exact
+head SHA (`bin/check_run_exists`), in which case there's nothing to gain
+by re-running it. `ready_for_review` always forces an immediate
+high-priority run unconditionally, with no existing-run check: its prior
+run, if any, was necessarily the reduced draft-time one, which never
+counts as "already covered."
 
 ## `claude-code-review.yml`
 
