@@ -69,24 +69,46 @@
 # feedback. `changes` tells the two apart via a base-independent content
 # hash (bin/patch_id_hash, robust to rebase-induced context shifts - see
 # its own comment - persisted per-PR across pushes via actions/cache since
-# GitHub Actions has no other cross-run memory): a synchronize push whose
-# hash matches the last one observed for this PR is routed to a
-# LOW-priority lane (`ci-<job>-lowprio-<0..2>`, a small fixed set shared
-# across ALL PRs, capping rebase noise to at most 3 concurrent runs
-# repo-wide instead of letting it consume the account's whole concurrency
-# budget) rather than the per-PR high-priority lane real pushes use. It
-# still gets the FULL matrix either way, just possibly later - a rebase CAN
-# break something the diff itself didn't touch, and this repo won't merge
-# without a clean run regardless. `edited` is in `pull_request.types` so a
-# base retarget (the signal gh stack sends when this PR is promoted to the
-# bottom of its stack - the next one due to merge) can be caught by the
-# `escalate` step and bumped to an immediate high-priority run bypassing
-# whatever lane its last push landed in, UNLESS a full run already exists
-# for that exact head SHA (checked via the Checks API), in which case
-# there's nothing to gain by re-running it. `ready_for_review` gets the
-# same escalation unconditionally (no existing-run check): its prior run,
-# if any, was necessarily the reduced draft-time one above, which doesn't
-# count as "already had one".
+# GitHub Actions has no other cross-run memory, compare-then-persist logic
+# in bin/ci_priority): a synchronize push whose hash matches the last one
+# observed for this PR gets `changes.outputs.priority = low` instead of the
+# default `high`.
+#
+# `test`, `pg-upgrade-test`, and `pg-tle-test` each exist as TWO job IDs
+# (e.g. `test` / `test-lowprio`) rather than one job with a
+# priority-conditional `if:`/`concurrency:` - see each job's own comment for
+# why the split itself is necessary (in short: `queue: max`, the mechanism
+# that lets the low-priority side QUEUE instead of cancelling, cannot
+# combine with a `cancel-in-progress` that could evaluate `true` at
+# runtime, so the low-priority variant needs a literal, unconditional
+# `cancel-in-progress: false` living in a job a real push can never enter).
+# The high-priority variant (`if: needs.changes.outputs.priority != 'low'`)
+# keeps a per-PR-per-leg concurrency group and unconditional
+# `cancel-in-progress: true`, same as before there were two job IDs. The
+# low-priority variant (`if: needs.changes.outputs.priority == 'low'`) uses
+# a group keyed by the MATRIX LEG ITSELF (e.g.
+# `format('ci-test-lowprio-{0}', matrix.pg)`), shared across ALL PRs' low-
+# priority pushes for that same leg value, plus `queue: max` (up to 100
+# runs queue in that group instead of all but one being cancelled). This
+# preserves full within-push matrix parallelism (each leg queues
+# independently) while still being "low priority": a low-priority run only
+# ever competes with OTHER low-priority runs of that exact same leg,
+# repo-wide - never with a real push's high-priority run, and never
+# blocking unrelated legs of its own push. It still gets the FULL matrix
+# either way, just possibly later - a rebase CAN break something the diff
+# itself didn't touch, and this repo won't merge without a clean run
+# regardless.
+#
+# `edited` is in `pull_request.types` so a base retarget (the signal gh
+# stack sends when this PR is promoted to the bottom of its stack - the
+# next one due to merge) can be caught by the `escalate` step (via
+# bin/check_run_exists) and bumped to an immediate high-priority run
+# bypassing whichever priority variant its last push landed in, UNLESS a
+# full run already exists for that exact head SHA (checked via the Checks
+# API), in which case there's nothing to gain by re-running it.
+# `ready_for_review` gets the same escalation unconditionally (no
+# existing-run check): its prior run, if any, was necessarily the reduced
+# draft-time one above, which doesn't count as "already had one".
 # ===========================================================================
 name: CI
 on:
@@ -131,7 +153,6 @@ jobs:
       newest_pg: ${{ steps.pg.outputs.newest_pg }}
       floor_pg: ${{ steps.pg.outputs.floor_pg }}
       priority: ${{ steps.diff.outputs.priority }}
-      lane: ${{ steps.lane.outputs.lane }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -156,10 +177,7 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          existing=$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
-            --jq '[.check_runs[] | select(.name == "all-checks-passed")]' 2>/dev/null || echo '[]')
-          count=$(echo "$existing" | jq 'length')
-          if [ "$count" -gt 0 ]; then
+          if [ "$(bin/check_run_exists "$REPO" "$SHA" all-checks-passed)" = "true" ]; then
             echo "escalate=false" >> "$GITHUB_OUTPUT"
             echo "SHA $SHA already has an all-checks-passed run - nothing to escalate"
           else
@@ -233,39 +251,25 @@ jobs:
             exit 0
           fi
 
-          CHANGED=$(git diff --name-only "$BASE" "$HEAD" || echo __DIFF_FAILED__)
-
-          DOCS_ONLY=true
-          if [ "$CHANGED" = "__DIFF_FAILED__" ] || [ -z "$CHANGED" ]; then
-            DOCS_ONLY=false
-          else
-            while IFS= read -r f; do
-              if ! [[ "$f" =~ \.(md|asc)$ ]]; then
-                DOCS_ONLY=false
-                break
-              fi
-            done <<< "$CHANGED"
-          fi
-
-          echo "changed files:"
-          echo "$CHANGED"
+          DOCS_ONLY=$(bin/docs_only_diff "$BASE" "$HEAD")
           echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
 
           # Priority: a synchronize push whose own patch-id (the PR's
           # actual contribution, independent of what it's based on) matches
           # the last one observed for this PR is a pure gh-stack rebase
-          # cascade, not new work - safe to route to the low-priority lane.
-          # Real new commits, and this PR's first appearance (nothing to
-          # compare against yet), keep the high priority set above.
+          # cascade, not new work - safe to route to the low-priority job
+          # IDs (see the top-of-file CI PRIORITY comment). Real new
+          # commits, and this PR's first appearance (nothing to compare
+          # against yet), keep the high priority set above. bin/ci_priority
+          # always overwrites /tmp/prev_patch_id with this push's patch-id,
+          # regardless of the verdict, so the NEXT push has something to
+          # compare against - only the "was it a synchronize push" gate
+          # below is specific to this call site.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            NEW_PATCH_ID=$(bin/patch_id_hash "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
-            echo "content patch-id: $NEW_PATCH_ID"
-            if [ "${{ github.event.action }}" = "synchronize" ] && \
-               [ -f /tmp/prev_patch_id ] && \
-               [ "$(cat /tmp/prev_patch_id)" = "$NEW_PATCH_ID" ]; then
+            PRIORITY=$(bin/ci_priority "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" /tmp/prev_patch_id)
+            if [ "${{ github.event.action }}" = "synchronize" ] && [ "$PRIORITY" = "low" ]; then
               echo "priority=low" >> "$GITHUB_OUTPUT"
             fi
-            echo "$NEW_PATCH_ID" > /tmp/prev_patch_id
           fi
 
       - name: Save this push's content patch-id for the next push to compare against
@@ -274,18 +278,6 @@ jobs:
         with:
           path: /tmp/prev_patch_id
           key: ci-patchid-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
-
-      - name: Assign a low-priority lane number
-        id: lane
-        # A fixed small number of shared lanes (not one lane per PR) bounds
-        # how much of the account's concurrent-runner budget rebase-cascade
-        # noise can ever occupy at once, so it can't crowd out real-work
-        # runs waiting for a runner - at the cost of not deduping a stale
-        # rebase run against a newer one for the SAME PR if they land in the
-        # same lane as an unrelated PR's job (acceptable: a stale completed
-        # check on an old SHA doesn't block merging the new SHA).
-        if: github.event_name == 'pull_request'
-        run: echo "lane=$(( ${{ github.event.pull_request.number }} % 3 ))" >> "$GITHUB_OUTPUT"
 
       - name: Derive the supported-PostgreSQL-major list
         id: pg
@@ -384,40 +376,28 @@ jobs:
   # suite keeps its output schema-invariant).
   test:
     needs: [changes]
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.priority != 'low' && needs.changes.outputs.docs_only != 'true'
     # "ci-test-" prefix, distinct from pg-upgrade-test's/pg-tle-test's below:
     # those run CONCURRENTLY with this job within the same PR's workflow run,
     # so sharing a group name across job types would make them cancel/queue
     # behind EACH OTHER instead of behind their own prior runs for this job.
-    # See the top-of-file CI PRIORITY comment for the low-priority lane
-    # scheme this implements.
     #
-    # The high-priority group includes ${{ matrix.pg }}: without it, every
-    # leg of THIS SAME push's own matrix would collide on one shared group
-    # name and cancel-in-progress would cancel siblings, not just a prior
-    # push's run - the exact opposite of "always runs the full matrix
-    # either way". Confirmed live: before this split, most legs of a normal
-    # (non-rebase) push came back cancelled instead of completing.
-    #
-    # KNOWN OPEN ISSUE, not yet resolved: the low-priority group deliberately
-    # has NO such per-leg split (that's the point - it's the shared,
-    # capped-concurrency lane), but GitHub Actions' default concurrency
-    # behavior only keeps ONE job PENDING per group at a time and CANCELS
-    # the previous pending one when a new one arrives (no `queue:` support
-    # for an expression, and `queue: max` can't combine with a
-    # conditionally-true `cancel-in-progress`) - confirmed live: pushing an
-    # unchanged-patch-id follow-up here cancelled most of this job's own
-    # matrix legs instead of queueing them, contradicting "still gets the
-    # FULL matrix either way" above for any push whose matrix has more legs
-    # than fit through instantaneously. Needs a real decision (accept a
-    # weaker/no concurrency cap, split low-priority into its own dedicated
-    # job with `queue: max`, or something else) before relying on this path.
+    # This is the HIGH-priority job ID - see test-lowprio right below for its
+    # low-priority counterpart, and the top-of-file CI PRIORITY comment for
+    # why the two are separate job IDs rather than one job with a
+    # priority-conditional `if:` here. The group includes ${{ matrix.pg }}:
+    # without it, every leg of THIS SAME push's own matrix would collide on
+    # one shared group name and cancel-in-progress would cancel siblings,
+    # not just a prior push's run - the exact opposite of "always runs the
+    # full matrix either way". Confirmed live: before this per-leg split,
+    # most legs of a normal (non-rebase) push came back cancelled instead of
+    # completing. cancel-in-progress is unconditionally true here (a real
+    # push always wants its own latest commit's result, never a stale one)
+    # - it's only the LOW-priority job below that needs it to be
+    # unconditionally false, for `queue: max` to be usable at all.
     concurrency:
-      group: >-
-        ${{ needs.changes.outputs.priority == 'low'
-          && format('ci-test-lowprio-{0}', needs.changes.outputs.lane)
-          || format('ci-test-{0}-{1}', github.event.pull_request.number || github.sha, matrix.pg) }}
-      cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
+      group: ci-test-${{ github.event.pull_request.number || github.sha }}-${{ matrix.pg }}
+      cancel-in-progress: true
     strategy:
       matrix:
         # From the single source in the changes job. On a draft PR, reduced
@@ -454,6 +434,56 @@ jobs:
         # difference - and diffs every object the extension owns; any
         # nonempty diff fails the step. Not a make target (it's a
         # standalone script, not `make test`), so invoked directly here.
+        run: bin/compare_fresh_vs_update 0.9.6
+
+  # LOW-priority counterpart of `test` above - same steps/matrix, only the
+  # `if:`/`concurrency:` differ. See the top-of-file CI PRIORITY comment for
+  # why a gh-stack rebase cascade is routed here instead of to `test`, and
+  # why that requires a genuinely separate job ID rather than a runtime
+  # branch inside one job: `queue: max` (letting up to 100 runs QUEUE in a
+  # concurrency group instead of cancelling all but the latest) cannot
+  # combine with a `cancel-in-progress` that could evaluate `true` at
+  # runtime - and a single job with `cancel-in-progress: ${{
+  # needs.changes.outputs.priority != 'low' }}` is exactly that, since the
+  # SAME job could run with priority=high on some other push. Splitting into
+  # two job IDs means THIS job's `cancel-in-progress: false` is a literal
+  # that can never be anything else, which is what makes `queue: max` legal
+  # here at all.
+  #
+  # The group is keyed by ${{ matrix.pg }} ALONE (no PR number), so it's
+  # shared across every PR's low-priority pushes for that same PG major -
+  # not a small fixed hashed set of lanes (the previous, buggy design): a
+  # real leg value queues against other runs of that SAME leg, repo-wide,
+  # while still leaving every OTHER leg of this push's own matrix to queue
+  # independently in its own group - preserving "still gets the FULL matrix
+  # either way" from the top-of-file comment, which the previous single-
+  # hashed-lane design didn't (confirmed live: it collapsed a whole push's
+  # matrix onto one shared group and cancelled most of its own legs).
+  test-lowprio:
+    needs: [changes]
+    if: needs.changes.outputs.priority == 'low' && needs.changes.outputs.docs_only != 'true'
+    concurrency:
+      group: ci-test-lowprio-${{ matrix.pg }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      matrix:
+        pg: ${{ github.event.pull_request.draft && fromJSON(format('[{0}]', needs.changes.outputs.newest_pg)) || fromJSON(needs.changes.outputs.supported_pg) }}
+    name: 🐘 PostgreSQL ${{ matrix.pg }} (low-priority)
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    steps:
+      - name: Start PostgreSQL ${{ matrix.pg }}
+        run: pg-start ${{ matrix.pg }}
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Test on PostgreSQL ${{ matrix.pg }}
+        run: make test
+      - name: Install count_nulls
+        run: make install
+      - name: Update 0.9.6 -> current and run the suite
+        run: make verify-results TEST_LOAD_SOURCE=update
+      - name: Structurally compare the updated objects against a fresh install
         run: bin/compare_fresh_vs_update 0.9.6
 
   # Proves count_nulls survives a BINARY pg_upgrade (in-place catalog
@@ -509,16 +539,18 @@ jobs:
     # Skipped outright (not just matrix-reduced like `test`) on a draft PR:
     # this is a heavy job, and a draft author doesn't need a real binary
     # pg_upgrade re-proven on every push while still iterating.
-    if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
+    if: needs.changes.outputs.priority != 'low' && needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
     # "ci-pgupgrade-" prefix, matrix.old_pg/new_pg split - see the `test`
     # job's concurrency comment above (currently a single-combination
     # matrix, but split the same way regardless in case that ever changes).
+    # This is the HIGH-priority job ID; see pg-upgrade-test-lowprio below for
+    # its low-priority counterpart, and the top-of-file CI PRIORITY comment
+    # for why splitting into two job IDs (rather than one job with a
+    # priority-conditional `if:` here) is what makes `queue: max` usable on
+    # the low-priority side at all.
     concurrency:
-      group: >-
-        ${{ needs.changes.outputs.priority == 'low'
-          && format('ci-pgupgrade-lowprio-{0}', needs.changes.outputs.lane)
-          || format('ci-pgupgrade-{0}-{1}-{2}', github.event.pull_request.number || github.sha, matrix.old_pg, matrix.new_pg) }}
-      cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
+      group: ci-pgupgrade-${{ github.event.pull_request.number || github.sha }}-${{ matrix.old_pg }}-${{ matrix.new_pg }}
+      cancel-in-progress: true
     strategy:
       matrix:
         # Single-element lists built from the changes job's floor_pg/
@@ -581,24 +613,7 @@ jobs:
         # PATH may not be the new version's.
         run: make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.new_pg }}/bin/pg_config
       - name: Stop old cluster, binary pg_upgrade to PostgreSQL ${{ matrix.new_pg }}, start new cluster
-        run: |
-          pg_ctlcluster ${{ matrix.old_pg }} test stop
-          pg_createcluster -p 5432 ${{ matrix.new_pg }} test -- $INITDB_OPTS
-          # PG17+ writes logs to $new_datadir/pg_upgrade_output.d/; older
-          # versions write to CWD. Search both on failure.
-          mkdir -p /tmp/pg_upgrade_logs
-          chown postgres:postgres /tmp/pg_upgrade_logs
-          su -c "cd /tmp/pg_upgrade_logs && /usr/lib/postgresql/${{ matrix.new_pg }}/bin/pg_upgrade \
-            -b /usr/lib/postgresql/${{ matrix.old_pg }}/bin \
-            -B /usr/lib/postgresql/${{ matrix.new_pg }}/bin \
-            -d /var/lib/postgresql/${{ matrix.old_pg }}/test \
-            -D /var/lib/postgresql/${{ matrix.new_pg }}/test \
-            -o '-c config_file=/etc/postgresql/${{ matrix.old_pg }}/test/postgresql.conf' \
-            -O '-c config_file=/etc/postgresql/${{ matrix.new_pg }}/test/postgresql.conf'" postgres \
-            || { find /tmp/pg_upgrade_logs \
-                      /var/lib/postgresql/${{ matrix.new_pg }}/test/pg_upgrade_output.d \
-                      -name '*.log' 2>/dev/null | sort | xargs -r tail -n +1; exit 1; }
-          pg_ctlcluster ${{ matrix.new_pg }} test start
+        run: bin/pg_binary_upgrade ${{ matrix.old_pg }} ${{ matrix.new_pg }}
       - name: Update to current after pg_upgrade (proves pg_upgrade preserves OLDEST-version objects)
         # Exercises ALTER EXTENSION UPDATE AFTER the binary pg_upgrade
         # above, against the NEW cluster (already started by the previous
@@ -644,6 +659,65 @@ jobs:
           bin/compare_fresh_vs_update 0.9.6 upgrade_oldest_first
           bin/compare_fresh_vs_update 0.9.6 upgrade_current_first
 
+  # LOW-priority counterpart of pg-upgrade-test above - same steps/matrix,
+  # only the `if:`/`concurrency:` differ. See test-lowprio's comment (right
+  # after `test` above) for why this needs to be a separate job ID rather
+  # than a runtime branch inside pg-upgrade-test itself, and the top-of-file
+  # CI PRIORITY comment for the overall scheme. Group keyed by
+  # matrix.old_pg + matrix.new_pg alone (no PR number) - shared across every
+  # PR's low-priority pg-upgrade-test pushes for that same leg combination,
+  # not the small fixed hashed-lane set the previous design used.
+  pg-upgrade-test-lowprio:
+    needs: [changes]
+    if: needs.changes.outputs.priority == 'low' && needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
+    concurrency:
+      group: ci-pgupgrade-lowprio-${{ matrix.old_pg }}-${{ matrix.new_pg }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      matrix:
+        old_pg: ["${{ needs.changes.outputs.floor_pg }}"]
+        new_pg: ["${{ needs.changes.outputs.newest_pg }}"]
+    name: 🔄 Binary pg_upgrade ${{ matrix.old_pg }} → ${{ matrix.new_pg }} (low-priority)
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    env:
+      INITDB_OPTS: --data-checksums --auth trust
+    steps:
+      - name: Install PostgreSQL ${{ matrix.old_pg }} (cluster created next, with the right initdb options from the start)
+        run: NO_CLUSTER=1 pg-start ${{ matrix.old_pg }}
+      - name: Create old cluster with data checksums enabled
+        run: |
+          pg_createcluster -p 5432 ${{ matrix.old_pg }} test -- $INITDB_OPTS
+          pg_ctlcluster ${{ matrix.old_pg }} test start
+          pg_isready -t 30
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Install count_nulls into old cluster
+        run: make install
+      - name: Prepare the old cluster (install + dependency guard), twin databases
+        run: |
+          bin/test_existing prepare-old upgrade_oldest_first 0.9.6
+          bin/test_existing prepare-old upgrade_current_first 0.9.6
+      - name: Update to current before pg_upgrade (proves pg_upgrade preserves CURRENT objects)
+        run: bin/test_existing update upgrade_current_first
+      - name: Install PostgreSQL ${{ matrix.new_pg }}
+        run: apt-get install -y postgresql-${{ matrix.new_pg }} postgresql-server-dev-${{ matrix.new_pg }}
+      - name: Install count_nulls into new cluster
+        run: make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.new_pg }}/bin/pg_config
+      - name: Stop old cluster, binary pg_upgrade to PostgreSQL ${{ matrix.new_pg }}, start new cluster
+        run: bin/pg_binary_upgrade ${{ matrix.old_pg }} ${{ matrix.new_pg }}
+      - name: Update to current after pg_upgrade (proves pg_upgrade preserves OLDEST-version objects)
+        run: bin/test_existing update upgrade_oldest_first
+      - name: Run the suite against the pg_upgraded database(s) (existing mode), twin databases
+        run: |
+          bin/test_existing run-suite upgrade_oldest_first
+          bin/test_existing run-suite upgrade_current_first
+      - name: Structurally compare the pg_upgraded databases against a fresh install
+        run: |
+          bin/compare_fresh_vs_update 0.9.6 upgrade_oldest_first
+          bin/compare_fresh_vs_update 0.9.6 upgrade_current_first
+
   # Covers both a fresh install AND the 0.9.6 -> current update path, both
   # purely via pg_tle. pgxntool 2.3.0's fix for installcheck's ordering bug
   # (Postgres-Extensions/pgxntool#83) made `installcheck` (and so `make
@@ -661,15 +735,16 @@ jobs:
     # Skipped outright (not just matrix-reduced like `test` above) on a
     # draft PR: this is a heavy job, and a draft author doesn't need the
     # pg_tle deployment path re-proven on every push while still iterating.
-    if: needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
+    if: needs.changes.outputs.priority != 'low' && needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
     # "ci-pgtle-" prefix, matrix.pg split - see the `test` job's concurrency
-    # comment above.
+    # comment above. This is the HIGH-priority job ID; see
+    # pg-tle-test-lowprio below for its low-priority counterpart, and the
+    # top-of-file CI PRIORITY comment for why splitting into two job IDs
+    # (rather than one job with a priority-conditional `if:` here) is what
+    # makes `queue: max` usable on the low-priority side at all.
     concurrency:
-      group: >-
-        ${{ needs.changes.outputs.priority == 'low'
-          && format('ci-pgtle-lowprio-{0}', needs.changes.outputs.lane)
-          || format('ci-pgtle-{0}-{1}', github.event.pull_request.number || github.sha, matrix.pg) }}
-      cancel-in-progress: ${{ needs.changes.outputs.priority != 'low' }}
+      group: ci-pgtle-${{ github.event.pull_request.number || github.sha }}-${{ matrix.pg }}
+      cancel-in-progress: true
     strategy:
       matrix:
         # Intersection of count_nulls' own supported range (10-18, see the
@@ -768,24 +843,7 @@ jobs:
           createdb count_nulls_smoke
           psql -d count_nulls_smoke -c "CREATE EXTENSION count_nulls"
       - name: Verify count_nulls works when deployed via pg_tle
-        run: |
-          INSTALLED=$(psql -d count_nulls_smoke -tAc "SELECT extversion FROM pg_extension WHERE extname = 'count_nulls'")
-          # EXTENSION_count_nulls_VERSION (the .control file's default_version),
-          # NOT PGXNVERSION (the PGXN distribution version, from META.in.json)
-          # -- a version-less CREATE EXTENSION installs whatever the control
-          # file's default_version says, and count_nulls' is currently the
-          # 'stable' pseudo-version, not the last real release. See
-          # RELEASE.md's note on distribution vs. extension versions.
-          EXPECTED=$(make -s print-EXTENSION_count_nulls_VERSION 2>/dev/null | sed -n 's/.*set to "\(.*\)"$/\1/p')
-          echo "installed=$INSTALLED expected=$EXPECTED"
-          if [ -z "$INSTALLED" ] || [ -z "$EXPECTED" ] || [ "$INSTALLED" != "$EXPECTED" ]; then
-            echo "FAIL: installed='$INSTALLED' expected='$EXPECTED'"; exit 1
-          fi
-          RESULT=$(psql -d count_nulls_smoke -v ON_ERROR_STOP=1 -tAc "SELECT null_count(1, NULL, 2)")
-          echo "null_count(1, NULL, 2)=$RESULT"
-          if [ "$RESULT" != "1" ]; then
-            echo "FAIL: expected null_count(1, NULL, 2) = 1, got '$RESULT'"; exit 1
-          fi
+        run: bin/verify_pgtle_smoke count_nulls_smoke
       - name: Verify no stray extension control files after the fresh-install smoke test
         run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
       - name: Install count_nulls at 0.9.6, purely via pg_tle (update-path prep)
@@ -827,6 +885,84 @@ jobs:
         # behind a scratch DESTDIR.
         run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
 
+  # LOW-priority counterpart of pg-tle-test above - same steps/matrix, only
+  # the `if:`/`concurrency:` differ. See test-lowprio's comment (right after
+  # `test`, near the top of this file) for why this needs to be a separate
+  # job ID rather than a runtime branch inside pg-tle-test itself, and the
+  # top-of-file CI PRIORITY comment for the overall scheme. Group keyed by
+  # matrix.pg alone (no PR number) - shared across every PR's low-priority
+  # pg-tle-test pushes for that same PG major, not the small fixed
+  # hashed-lane set the previous design used.
+  pg-tle-test-lowprio:
+    needs: [changes]
+    if: needs.changes.outputs.priority == 'low' && needs.changes.outputs.docs_only != 'true' && github.event.pull_request.draft != true
+    concurrency:
+      group: ci-pgtle-lowprio-${{ matrix.pg }}
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      matrix:
+        pg: [18, 17, 16, 15, 14, 13, 12]
+    name: 🧩 pg_tle ${{ matrix.pg }} (low-priority)
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    env:
+      PG_TLE_BUILD_VERSION: "1.5.2"
+    steps:
+      - name: Start PostgreSQL ${{ matrix.pg }}
+        run: pg-start ${{ matrix.pg }}
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Install rsync
+        run: apt-get install -y rsync
+      - name: Snapshot filesystem extension control files (pre-pgtap baseline)
+        run: bin/assert_fs_clean snapshot ${{ matrix.pg }} /tmp/pre_pgtap_baseline.txt
+      - name: Install pgtap (test harness dependency)
+        run: make pgtap
+      - name: Verify make pgtap installed exactly pgtap.control, nothing else
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/pre_pgtap_baseline.txt pgtap.control
+      - name: Snapshot filesystem extension control files (pre-pg_tle baseline)
+        run: bin/assert_fs_clean snapshot ${{ matrix.pg }} /tmp/control_baseline.txt
+      - name: Build and install pg_tle ${{ env.PG_TLE_BUILD_VERSION }}
+        run: |
+          apt-get install -y flex bison libkrb5-dev
+          git clone --branch v${{ env.PG_TLE_BUILD_VERSION }} --depth 1 https://github.com/aws/pg_tle.git /tmp/pg_tle
+          make -C /tmp/pg_tle install
+      - name: Enable pg_tle and restart PostgreSQL ${{ matrix.pg }}
+        run: |
+          echo "shared_preload_libraries = 'pg_tle'" >> /etc/postgresql/${{ matrix.pg }}/test/postgresql.conf
+          pg_ctlcluster ${{ matrix.pg }} test restart
+          pg_isready -t 30
+      - name: Register pg_tle + count_nulls against template1
+        run: |
+          psql -d template1 -c "CREATE EXTENSION pg_tle"
+          PGDATABASE=template1 make run-pgtle
+      - name: Verify no stray extension control files landed on the filesystem
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Install count_nulls purely via pg_tle (fresh install, no filesystem trace)
+        run: |
+          test ! -e /usr/share/postgresql/${{ matrix.pg }}/extension/count_nulls.control
+          createdb count_nulls_smoke
+          psql -d count_nulls_smoke -c "CREATE EXTENSION count_nulls"
+      - name: Verify count_nulls works when deployed via pg_tle
+        run: bin/verify_pgtle_smoke count_nulls_smoke
+      - name: Verify no stray extension control files after the fresh-install smoke test
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Install count_nulls at 0.9.6, purely via pg_tle (update-path prep)
+        run: |
+          test ! -e /usr/share/postgresql/${{ matrix.pg }}/extension/count_nulls.control
+          bin/test_existing prepare-old count_nulls_pgtle_update 0.9.6
+      - name: Verify no stray extension control files after installing 0.9.6 via pg_tle
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Update 0.9.6 -> current, purely via pg_tle
+        run: bin/test_existing update count_nulls_pgtle_update
+      - name: Verify no stray extension control files after the pg_tle update
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+      - name: Run the real pgTAP suite against the pg_tle-updated database (existing mode)
+        run: TEST_EXISTING_DEPLOY=pgtle bin/test_existing run-suite count_nulls_pgtle_update
+      - name: Verify no stray extension control files after the pgTAP suite
+        run: bin/assert_fs_clean verify ${{ matrix.pg }} /tmp/control_baseline.txt pg_tle.control
+
   # A single stable check name for use as a required status check in branch
   # protection rules. Matrix jobs produce check names like
   # "🐘 PostgreSQL 14" (one per supported major) which would all need to be
@@ -835,7 +971,7 @@ jobs:
   # off by the `changes` job on a docs-only push), and fails if any failed
   # or were cancelled.
   all-checks-passed:
-    needs: [changes, lint, test, pg-upgrade-test, pg-tle-test]
+    needs: [changes, lint, test, test-lowprio, pg-upgrade-test, pg-upgrade-test-lowprio, pg-tle-test, pg-tle-test-lowprio]
     if: always()
     runs-on: ubuntu-latest
     steps:
