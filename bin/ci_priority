@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# ci_priority - Decide whether a PR's content patch-id (see bin/patch_id_hash)
+# matches the last one observed for this PR - i.e. a pure gh-stack rebase
+# cascade, not new work, safe to route to CI's low-priority lane - and
+# persist this push's patch-id for the NEXT push to compare against. See
+# ci.yml's top-of-file CI PRIORITY comment for why that distinction exists.
+# Extracted from the `changes` job's diff step so this stateful
+# compare-then-persist logic is testable on its own (given a scratch
+# PREV_FILE), instead of only inline in a `run:` block.
+#
+# PREV_FILE holds the last observed patch-id. It's fine for it not to exist
+# yet (this PR's first push) - that's always "high", nothing to compare
+# against. It's OVERWRITTEN with this push's patch-id before exiting,
+# regardless of the verdict, so the NEXT invocation has something to
+# compare against.
+#
+# Prints "low" or "high" to stdout. The caller (ci.yml) is still
+# responsible for only trusting a "low" verdict on an actual `synchronize`
+# push - see the `changes` job, which also gates on that.
+#
+# USAGE: bin/ci_priority BASE HEAD PREV_FILE
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+base="$1"
+head="$2"
+prev_file="$3"
+
+new_patch_id=$(bin/patch_id_hash "$base" "$head")
+echo "content patch-id: $new_patch_id" >&2
+
+priority=high
+if [ -f "$prev_file" ] && [ "$(cat "$prev_file")" = "$new_patch_id" ]; then
+  priority=low
+fi
+
+echo "$new_patch_id" > "$prev_file"
+echo "$priority"

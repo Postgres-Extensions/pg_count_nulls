@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# docs_only_diff - Report whether every file changed between BASE and HEAD
+# has a docs-only extension (.md or .asc), so CI's `changes` job can let the
+# heavy test jobs skip themselves on a pure-documentation push. Extracted
+# from that job's "Compute per-push changed files, docs-only status, and CI
+# priority" step so the file-extension rule is testable on its own, apart
+# from the GitHub Actions event payload that decides which BASE/HEAD to
+# pass in.
+#
+# A failed diff (bad/unreachable refs) or an empty changed-file list is
+# treated as NOT docs-only - fail safe to running the full test matrix
+# rather than silently skipping it on an edge case this script can't prove
+# either way.
+#
+# Prints "true" or "false" to stdout - the only thing a caller should
+# parse. The changed-file list itself goes to stderr, purely for the CI
+# log.
+#
+# USAGE: bin/docs_only_diff BASE HEAD
+set -euo pipefail
+base="$1"
+head="$2"
+
+changed=$(git diff --name-only "$base" "$head") || changed=__DIFF_FAILED__
+
+echo "changed files:" >&2
+echo "$changed" >&2
+
+if [ "$changed" = "__DIFF_FAILED__" ] || [ -z "$changed" ]; then
+  echo "false"
+  exit 0
+fi
+
+docs_only=true
+while IFS= read -r f; do
+  case "$f" in
+    *.md|*.asc) ;;
+    *) docs_only=false; break ;;
+  esac
+done <<< "$changed"
+
+echo "$docs_only"

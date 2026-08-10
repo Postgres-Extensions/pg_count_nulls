@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# check_run_exists - Report whether SHA already has a check run named NAME
+# (any conclusion) in REPO, via the Checks API. Extracted from ci.yml's
+# `changes` job "escalate" step, which uses this to decide whether a base
+# retarget (the gh-stack-promotion signal described in ci.yml's top-of-file
+# CI PRIORITY comment) has anything left to prove: if an all-checks-passed
+# run already covers this exact SHA, escalating again would just re-run
+# something whose result is already known.
+#
+# Prints "true" or "false" to stdout. Requires GH_TOKEN in the environment
+# (as the `gh` CLI itself does) and network access to GitHub's API - so,
+# unlike this repo's other bin/ scripts, it can't be exercised against a
+# local checkout alone, only against a real repo/SHA you have API access
+# to.
+#
+# USAGE: bin/check_run_exists REPO SHA NAME
+set -euo pipefail
+repo="$1"
+sha="$2"
+name="$3"
+
+existing=$(gh api "repos/$repo/commits/$sha/check-runs" --paginate \
+  --jq "[.check_runs[] | select(.name == \"$name\")]" 2>/dev/null || echo '[]')
+count=$(echo "$existing" | jq 'length')
+
+if [ "$count" -gt 0 ]; then
+  echo "true"
+else
+  echo "false"
+fi
