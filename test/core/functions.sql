@@ -233,8 +233,10 @@ BEGIN
     , 'Test null_count(a, b, c)'
   );
 
-  -- Test JSON versions
-  -- These could be combined...
+  /*
+   * Test JSON versions
+   * These could be combined...
+   */
   RETURN NEXT bag_eq(
     format($$SELECT a, b, c, %1$I.null_count( row_to_json( row(a, b, c) ) ), %1$I.not_null_count( row_to_json( row(a, b, c) ) ) FROM test_data$$, ncs())
     , $$SELECT *, 3-null_count AS not_null_count FROM test_data$$
