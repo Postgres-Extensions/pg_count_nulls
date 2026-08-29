@@ -14,10 +14,10 @@ then invoke via `runtests()`.
   comes from this file failing loudly if something's wrong, not from a
   textual comparison.
 - `deps.sql` — loaded by every test file (via `load.sql` ->
-  `pgxntool/setup.sql` -> `deps.sql`). No longer installs count_nulls
-  itself (that's `install/load.sql`'s job); only for genuine per-test
-  dependency statements. Currently empty - see its own header comment for
-  why it's kept that way rather than deleted.
+  `pgxntool/setup.sql` -> `deps.sql`). Doesn't install count_nulls (that's
+  `install/load.sql`'s job); its only job is `\i`ing `helpers/test_user.sql`
+  so each test session runs unprivileged (see "Running as a non-superuser"
+  below).
 - `core/functions.sql` — a shared helper, `\i`'d by `sql/extension_tests.sql`.
   Defines `ncs()` (discovers, live, which schema count_nulls is actually
   installed in - never trusts a hardcoded/passed-in value) plus a battery of
@@ -52,6 +52,62 @@ then invoke via `runtests()`.
 - `helpers/find_test_schema.sql` — rediscovers the randomly generated schema
   count_nulls was installed into (see "Schema targeting" below), for
   sessions that didn't create it themselves.
+- `helpers/test_user.sql` — drops the session to a non-superuser role (see
+  "Running as a non-superuser" below). `\i`'d by `deps.sql` and
+  `helpers/create_test_schema.sql`.
+
+## Running as a non-superuser
+
+Every session the suite runs in - the install session and each test session
+- runs as an ordinary role, `Test user for count_nulls`. That's what makes
+`superuser = false` in `count_nulls.control` a tested property rather than a
+claim: count_nulls is pure SQL functions with nothing privileged in it, and
+a suite running as a superuser could never notice that line going missing.
+
+`helpers/test_user.sql` owns the whole arrangement, and is `\i`'d from both
+entry points that start such a session: `deps.sql` (every `test/sql/` file,
+via pgxntool's `setup.sql`) and `helpers/create_test_schema.sql` (the
+install session, and `bin/test_existing`'s `prepare-old`).
+
+The role's name is spelled exactly once, as a psql variable at the top of
+that file. Like the generated schema name it can't be written without SQL
+identifier quoting, and it's deliberately sentence-like so it won't collide
+with a real role on whatever cluster someone points the suite at.
+
+**Every decision is server-side**, in a `pg_temp` function taking the role
+name and *returning the role this session should run as*, because psql can't
+branch before 10: `\if` is psql 10, and CI covers back to 9.4, where psql
+reports it as an invalid command and then runs the branch it should have
+skipped. (`\gset`, which feeds the returned name into the `SET ROLE`, is fine
+- 9.3.) The function creates the role if it's missing, grants it what it
+needs, and raises if the role is a superuser or a member of any managed-cloud
+equivalent - `rds_superuser` (RDS/Aurora), `cloudsqlsuperuser` (Cloud SQL) or
+`azure_pg_admin` (Azure Flexible Server), none of which carry `rolsuper`, so
+they have to be named. The `SET ROLE` itself is a plain statement after that
+call, not something the function does.
+
+**One case deliberately doesn't switch**: a count_nulls that's already
+installed and owned by somebody else, which is what a real `pg_upgrade`
+leaves behind (existing mode). PostgreSQL has no `ALTER EXTENSION ... OWNER
+TO`, so pg_dump can't carry an extension's ownership across - `--binary-
+upgrade` emits `binary_upgrade_create_empty_extension()`, which takes no
+owner, and the extension ends up belonging to whoever ran the restore. Its
+member functions keep their owner; only the extension object itself is out of
+reach, which is precisely what `test__shutdown__drop_all` needs. Switching
+there would just hand the suite a role that can't drop the extension, and
+nothing is lost by staying put: existing mode installs nothing, so it was
+never the leg proving the install works unprivileged.
+
+The file opens with `RESET ROLE` so a second `\i` in one session behaves
+exactly like the first - which is not hypothetical, since on psql older than
+10 `install/load.sql`'s mode branches all run and this file gets reached
+twice.
+
+Only two privileges are granted: `CREATE` on the database (count_nulls' own
+schema, and `_null_count_test`) and `USAGE` on schema `tap` (pgTAP is
+harness, and `setup.sql` creates that schema as the connecting role, which
+grants nobody else access). Anything beyond those turning out to be
+necessary is a finding about count_nulls, not something to grant here.
 
 ## Schema targeting
 

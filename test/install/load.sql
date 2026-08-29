@@ -81,8 +81,13 @@ BEGIN
     SELECT default_version INTO v_default
       FROM pg_available_extensions WHERE name = 'count_nulls';
   ELSE
+    /*
+     * A distinct tag. Reusing this DO block's own (untagged) delimiter
+     * would close its body right here, leaving the remainder to be parsed
+     * as bare SQL - which is also why this comment can't spell it out.
+     */
     RAISE EXCEPTION
-      $$count_nulls.test_existing_deploy must be 'filesystem' or 'pgtle', got '%'$$
+      $msg$count_nulls.test_existing_deploy must be 'filesystem' or 'pgtle', got '%'$msg$
       , v_deploy
     ;
   END IF;
