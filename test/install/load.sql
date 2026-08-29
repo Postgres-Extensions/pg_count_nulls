@@ -12,106 +12,142 @@
  * from a textual comparison - matching cat_tools' test/install/load.sql.
  */
 
+-- CRITICAL: without this an error goes undetected, causing unpredictable results
+\set ON_ERROR_STOP on
+
+-- TODO: this file's mode branching could move back to \if once PG10 is the floor
+
 /*
- * Mode selection: 'fresh' installs the current version directly; 'update'
- * installs the oldest version we still ship a full script for (0.9.6) and
- * runs ALTER EXTENSION UPDATE, committed (this file runs outside any
- * per-test rolled-back transaction, unlike the old test/deps.sql approach -
- * see pgxntool/README.asc's U&U section for why the commit matters);
- * 'existing' asserts count_nulls is already installed (a real `pg_upgrade`
- * run, external to this invocation) and touches nothing.
- *
- * Read without missing_ok: a genuinely unpropagated GUC must fail loudly,
- * not be indistinguishable from a deliberately empty one.
+ * Definitions only - safe to load before the test-user switch below.
+ * Cleanup runs next, as the connecting role (a leftover schema can belong to
+ * any role, and only the connecting one is sure to be able to drop it), then
+ * the switch, then the actual install.
  */
-SELECT current_setting('count_nulls.test_load_mode')              AS count_nulls_load_mode
-     , current_setting('count_nulls.test_load_mode') = 'update'   AS count_nulls_update_mode
-     , current_setting('count_nulls.test_load_mode') = 'existing' AS count_nulls_existing_mode
+\i test/helpers/extension_installer.sql
+
+/*
+ * count_nulls_load_mode is gset here rather than read again by
+ * use_test_user.sql itself, for the same reason noted on that file: the
+ * GUC isn't set for every invocation that \i's it, so every includer must
+ * supply it explicitly.
+ */
+SELECT pg_temp.count_nulls_cleanup_test_schemas(
+  current_setting('count_nulls.test_load_mode')
+) AS count_nulls_cleaned_up
+     , current_setting('count_nulls.test_load_mode') AS count_nulls_load_mode
 \gset
 
-DO $$
-BEGIN
-  IF current_setting('count_nulls.test_load_mode') NOT IN ('fresh', 'update', 'existing') THEN
-    RAISE EXCEPTION
-      $msg$count_nulls.test_load_mode must be 'fresh', 'update' or 'existing', got '%'$msg$
-      , current_setting('count_nulls.test_load_mode')
-    ;
-  END IF;
-END
-$$;
+\i test/helpers/use_test_user.sql
 
-\if :count_nulls_existing_mode
 /*
- * Already installed by something external to this pg_regress invocation
- * (a real pg_upgrade run, or a pg_tle registration - see the
- * pg-upgrade-test / pg-tle-test CI jobs). Only assert it's present and at
- * the current version; do NOT drop/create/update it - the whole point of
- * this mode is testing the REAL migrated/deployed objects.
- *
- * The "current version" half of that assertion (v_default below) has two
- * sources depending on count_nulls.test_existing_deploy (see the
- * TEST_EXISTING_DEPLOY comment in the Makefile):
- *   - filesystem (default): pg_available_extensions.default_version, read
- *     straight from a real .control file on disk.
- *   - pgtle: count_nulls was registered purely through pg_tle's
- *     database-backed catalog, never touching the filesystem.
- *     pg_available_extensions does NOT see pg_tle registrations at all - it
- *     only ever reads .control files off disk - so it comes back NULL here
- *     even though CREATE EXTENSION correctly resolves the default version
- *     through pg_tle. pg_tle ships its own separate, non-integrated analog
- *     for this: pgtle.available_extensions() (see pg_tle's tleextension.c,
- *     which documents pg_available_extensions as merely modeled on this
- *     SRF, not backed by it). Use that instead when running under pg_tle,
- *     rather than weakening the check for the filesystem case.
+ * Mode selection: 'fresh' installs the current version directly; 'update'
+ * installs the oldest version we still ship a full script for and runs
+ * ALTER EXTENSION UPDATE, committed (this file runs outside any per-test
+ * rolled-back transaction - see pgxntool/README.asc's U&U section for why
+ * the commit matters); 'existing' asserts count_nulls is already installed
+ * (a real pg_upgrade run, or a pg_tle registration, external to this
+ * invocation) and touches nothing.
  */
-DO $$
+CREATE OR REPLACE FUNCTION pg_temp.count_nulls_load(
+  p_mode text
+  , p_deploy text
+) RETURNS void LANGUAGE plpgsql AS $body$
 DECLARE
-  v_installed text := (SELECT extversion FROM pg_extension WHERE extname = 'count_nulls');
-  v_deploy    text := current_setting('count_nulls.test_existing_deploy');
+  -- The oldest version we still ship a full install script for
+  c_oldest_full_install CONSTANT text := '0.9.6';
+  v_installed text;
   v_default   text;
 BEGIN
-  IF v_installed IS NULL THEN
-    RAISE EXCEPTION 'count_nulls.test_load_mode=existing but count_nulls is not installed';
-  END IF;
-
-  IF v_deploy = 'pgtle' THEN
-    SELECT default_version INTO v_default
-      FROM pgtle.available_extensions() WHERE name = 'count_nulls';
-  ELSIF v_deploy = 'filesystem' THEN
-    SELECT default_version INTO v_default
-      FROM pg_available_extensions WHERE name = 'count_nulls';
-  ELSE
+  IF p_mode NOT IN ('fresh', 'update', 'existing') THEN
     RAISE EXCEPTION
-      $msg$count_nulls.test_existing_deploy must be 'filesystem' or 'pgtle', got '%'$msg$
-      , v_deploy
+      $msg$count_nulls.test_load_mode must be 'fresh', 'update' or 'existing', got '%'$msg$
+      , p_mode
     ;
   END IF;
 
-  IF v_installed IS DISTINCT FROM v_default THEN
-    RAISE EXCEPTION 'count_nulls installed at % but default_version (deploy=%) is %', v_installed, v_deploy, v_default;
+  IF p_mode = 'existing' THEN
+    /*
+     * Already installed by something external to this pg_regress invocation
+     * (a real pg_upgrade run, or a pg_tle registration - see the
+     * pg-upgrade-test / pg-tle-test CI jobs). Only assert it's present and
+     * at the current version; do NOT drop/create/update it - the whole
+     * point of this mode is testing the REAL migrated/deployed objects.
+     */
+    v_installed := (SELECT extversion FROM pg_extension WHERE extname = 'count_nulls');
+
+    IF v_installed IS NULL THEN
+      RAISE EXCEPTION 'count_nulls.test_load_mode=existing but count_nulls is not installed';
+    END IF;
+
+    /*
+     * Where "the current version" comes from depends on how count_nulls got
+     * here (see the TEST_EXISTING_DEPLOY comment in the Makefile):
+     *
+     *   - filesystem: pg_available_extensions.default_version, read straight
+     *     from a real .control file on disk.
+     *   - pgtle: count_nulls was registered purely through pg_tle's
+     *     database-backed catalog, never touching the filesystem.
+     *     pg_available_extensions does NOT see pg_tle registrations at all -
+     *     it only ever reads .control files off disk - so it comes back NULL
+     *     even though CREATE EXTENSION correctly resolves the default
+     *     version through pg_tle. pg_tle ships its own separate,
+     *     non-integrated analog: pgtle.available_extensions() (see pg_tle's
+     *     tleextension.c, which documents pg_available_extensions as merely
+     *     modeled on this SRF, not backed by it). Use that here rather than
+     *     weakening the check for the filesystem case.
+     *
+     * plpgsql parses a statement only when it first executes, so the pgtle
+     * reference below costs nothing on a cluster without pg_tle installed.
+     */
+    IF p_deploy = 'pgtle' THEN
+      SELECT default_version INTO v_default
+        FROM pgtle.available_extensions() WHERE name = 'count_nulls';
+    ELSIF p_deploy = 'filesystem' THEN
+      SELECT default_version INTO v_default
+        FROM pg_available_extensions WHERE name = 'count_nulls';
+    ELSE
+      RAISE EXCEPTION
+        $msg$count_nulls.test_existing_deploy must be 'filesystem' or 'pgtle', got '%'$msg$
+        , p_deploy
+      ;
+    END IF;
+
+    IF v_installed IS DISTINCT FROM v_default THEN
+      RAISE EXCEPTION
+        'count_nulls installed at % but default_version (deploy=%) is %'
+        , v_installed, p_deploy, v_default
+      ;
+    END IF;
+
+    RETURN;
+  END IF;
+
+  IF p_mode = 'update' THEN
+    PERFORM pg_temp.count_nulls_install_extension(c_oldest_full_install);
+
+    /*
+     * Deliberately no client_min_messages suppression around this. Postgres
+     * already raises it to at least WARNING for the duration of an update
+     * script and restores the caller's setting afterwards, so setting it
+     * here would be redundant - and, being unconditional, would lower the
+     * level for a caller who had deliberately set something stricter.
+     */
+    ALTER EXTENSION count_nulls UPDATE;
+  ELSE
+    PERFORM pg_temp.count_nulls_install_extension('current');
   END IF;
 END
-$$;
-\else
+$body$;
+
 /*
- * fresh/update: creation (fresh, randomly named schema; install at
- * :version or current) is shared with bin/test_existing's prepare-old via
- * test/helpers/create_test_schema.sql - see that file for the full
- * rationale. 'update' additionally installs the oldest version we still
- * ship a full script for, then upgrades it in place.
+ * Read without missing_ok: a genuinely unpropagated GUC must fail loudly,
+ * not be indistinguishable from a deliberately empty one. (current_setting's
+ * missing_ok argument is 9.6 anyway, and CI covers 9.4.)
  */
-\if :count_nulls_update_mode
-\set version '0.9.6'
-\i test/helpers/create_test_schema.sql
-/*
- * Suppress the "already installed, no update" NOTICE class of messages any
- * update script might emit.
- */
-SET client_min_messages = WARNING;
-ALTER EXTENSION count_nulls UPDATE;
-SET client_min_messages = NOTICE;
-\else
-\set version 'current'
-\i test/helpers/create_test_schema.sql
-\endif
-\endif
+SELECT pg_temp.count_nulls_load(
+    current_setting('count_nulls.test_load_mode')
+    , current_setting('count_nulls.test_existing_deploy')
+  ) AS count_nulls_loaded
+\gset
+
+-- vi: expandtab sw=2 ts=2

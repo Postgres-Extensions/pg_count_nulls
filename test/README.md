@@ -6,15 +6,23 @@ Unusually for a pgTAP suite, assertions aren't written per test file:
 
 ## Layout
 
+A helper named for an action performs it when `\i`'d; one named for a thing
+just defines it, leaving the caller to decide when to use it.
+
 - `install/load.sql` — installs count_nulls once, committed, before the
-  `test/sql/` schedule. Its output isn't tracked; it fails loudly instead.
+  `test/sql/` schedule, per `TEST_LOAD_SOURCE`. Its output isn't tracked; it
+  fails loudly instead.
 - `deps.sql` — per-test-session setup; drops the session to the test user.
 - `core/functions.sql` — `ncs()`, plus the shared `test__*` library.
 - `sql/extension_tests.sql` — adds `test__check_ncs` and
   `test__shutdown__drop_all`, then calls `runtests()`.
-- `helpers/use_test_user.sql` — switches the session to the non-superuser role.
-- `helpers/create_test_schema.sql` — installs count_nulls at `:version` into
-  a fresh, randomly named schema.
+- `helpers/use_test_user.sql` — switches the session to the non-superuser
+  role.
+- `helpers/extension_installer.sql` — defines the functions that clean up
+  leftover test schemas and install count_nulls at a given version into a
+  fresh, randomly named one.
+- `helpers/create_test_schema.sql` — calls both, with `:version`; a file
+  only because `bin/test_existing`'s `prepare-old` runs it standalone.
 - `helpers/find_test_schema.sql` — finds that schema again, from a session
   that didn't create it.
 - `../bin/compare_fresh_vs_update` — not part of this suite: diffs a fresh
@@ -39,6 +47,10 @@ genuinely correct. `test__check_ncs` asserts it. Two consequences:
 - Assertions pass an explicit, schema-free description to every pgTAP call,
   overriding pgTAP's own (which embeds the schema). That's what keeps
   `expected/extension_tests.out` a single file valid for every run.
+
+Neither `install/load.sql` nor `helpers/use_test_user.sql` may use `\if`:
+it's psql 10, CI covers back to 9.4, and under `ON_ERROR_STOP` psql aborts on
+it. Both branch server-side instead.
 
 ## Regenerating expected output
 
