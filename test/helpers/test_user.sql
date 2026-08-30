@@ -52,7 +52,7 @@ DECLARE
     '{rds_superuser,cloudsqlsuperuser,azure_pg_admin}'
   ;
   v_role name;
-  v_extension_owner CONSTANT name := (
+  c_extension_owner CONSTANT name := (
     SELECT pg_get_userbyid(extowner) FROM pg_extension WHERE extname = 'count_nulls'
   );
 BEGIN
@@ -79,7 +79,7 @@ BEGIN
    * Nothing is lost by not switching here: existing mode installs nothing,
    * so it was never the leg proving the install works unprivileged.
    */
-  IF v_extension_owner IS NOT NULL AND v_extension_owner <> p_test_user THEN
+  IF c_extension_owner IS NOT NULL AND c_extension_owner <> p_test_user THEN
     RETURN current_user;
   END IF;
 
