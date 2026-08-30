@@ -98,6 +98,14 @@ there would just hand the suite a role that can't drop the extension, and
 nothing is lost by staying put: existing mode installs nothing, so it was
 never the leg proving the install works unprivileged.
 
+Don't expect a newer PostgreSQL to retire that branch. `extowner` has had no
+matching `ALTER EXTENSION ... OWNER TO` since it was added in 2011, because
+what that should do to the contained objects was never settled (handing a
+non-superuser a C-language handler function is the awkward case). Reported as
+BUG #18625 and acknowledged as a known shortcoming, still unfixed.
+`pg_dump --use-set-session-authorization` does dodge it, but `pg_upgrade`
+offers no way to ask for that.
+
 The file opens with `RESET ROLE` so a second `\i` in one session behaves
 exactly like the first - which is not hypothetical, since on psql older than
 10 `install/load.sql`'s mode branches all run and this file gets reached

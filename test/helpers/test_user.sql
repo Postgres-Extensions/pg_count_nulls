@@ -68,6 +68,14 @@ BEGIN
    * functions DO keep their owner, so only the extension object itself is
    * out of reach - which is exactly what test__shutdown__drop_all needs.
    *
+   * Don't expect a newer PostgreSQL to retire this branch. extowner has had
+   * no matching ALTER EXTENSION ... OWNER TO since it was added in 2011,
+   * because what that should do to the contained objects was never settled
+   * (handing a non-superuser a C-language handler function is the awkward
+   * case). Reported as BUG #18625 and acknowledged as a known shortcoming,
+   * still unfixed. pg_dump's --use-set-session-authorization does dodge it,
+   * but pg_upgrade offers no way to ask for that.
+   *
    * Nothing is lost by not switching here: existing mode installs nothing,
    * so it was never the leg proving the install works unprivileged.
    */
