@@ -89,19 +89,21 @@ BEGIN
     END IF;
 
     /*
-     * CREATE on the database is the one privilege the suite can't do
-     * without: create_test_schema.sql creates count_nulls' own schema, and
-     * core/functions.sql creates _null_count_test. USAGE on tap is pgTAP,
-     * which is harness rather than subject matter - pgxntool's setup.sql
-     * creates that schema as the connecting role, and a fresh schema grants
-     * nobody else access, so without this runtests() is simply invisible.
-     * Nothing else is granted: anything further turning out to be necessary
-     * is a finding about count_nulls, not something to paper over here.
+     * Can't fold into the CREATE ROLE above: the role is cluster-wide and
+     * outlives any one run, but this grant lives in the current database's
+     * ACL, so a run against a new database still has to issue it.
+     *
+     * These two grants are all the suite gets. Anything else turning out to
+     * be necessary is a finding about count_nulls, not something to grant.
      */
     EXECUTE format(
       'GRANT CREATE ON DATABASE %I TO %I', current_database(), p_test_user
     );
 
+    /*
+     * setup.sql creates schema tap as the connecting role, which grants
+     * nobody else USAGE - without this, runtests() is invisible.
+     */
     IF EXISTS(SELECT 1 FROM pg_namespace WHERE nspname = 'tap') THEN
       EXECUTE format('GRANT USAGE ON SCHEMA tap TO %I', p_test_user);
     END IF;
@@ -124,8 +126,11 @@ BEGIN
      * pg_has_role() errors outright on one that doesn't, and SQL promises
      * no evaluation order between the two halves of an AND.
      *
-     * MEMBER, not USAGE: being able to SET ROLE to one of these is just as
-     * disqualifying as inheriting it outright.
+     * MEMBER, not USAGE, is deliberately over-strict: it also rejects a
+     * role that merely *could* SET ROLE to one of these without ever having
+     * done so, which isn't the same as holding the privileges. Simpler than
+     * reasoning about when it would actually matter, and nothing needs the
+     * looser check yet.
      */
     IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
       IF pg_has_role(p_test_user, v_role, 'MEMBER') THEN
