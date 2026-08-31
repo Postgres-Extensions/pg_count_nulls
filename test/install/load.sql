@@ -33,7 +33,7 @@ DO $$
 BEGIN
   IF current_setting('count_nulls.test_load_mode') NOT IN ('fresh', 'update', 'existing') THEN
     RAISE EXCEPTION
-      'count_nulls.test_load_mode must be ''fresh'', ''update'' or ''existing'', got ''%'''
+      $msg$count_nulls.test_load_mode must be 'fresh', 'update' or 'existing', got '%'$msg$
       , current_setting('count_nulls.test_load_mode')
     ;
   END IF;
