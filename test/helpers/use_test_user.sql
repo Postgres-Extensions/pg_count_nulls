@@ -144,13 +144,6 @@ BEGIN
 END
 $body$;
 
-/*
- * \gset, not \if, is what keeps the SET ROLE below both unconditional and
- * correct: the function returns whichever role this session should run as,
- * so the decision stays server-side while the switch itself stays an
- * ordinary statement. It also keeps the function's result out of every
- * test's expected output.
- */
 SELECT pg_temp.count_nulls_prepare_test_user(:'test_user') AS count_nulls_run_as
 \gset
 

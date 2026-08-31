@@ -37,13 +37,13 @@
  * generating this run's own name. See test/helpers/find_test_schema.sql
  * for how later, separate sessions rediscover the name this creates.
  *
- * Everything below runs as a non-superuser (see test/helpers/test_user.sql),
+ * Everything below runs as a non-superuser (see test/helpers/use_test_user.sql),
  * so a successful install here is itself the proof that count_nulls doesn't
  * need superuser to install. The switch has to come before the cleanup loop,
  * not just before CREATE EXTENSION: a leftover schema is one this same role
  * created on a previous run, so it's the role that must be able to drop it.
  */
-\i test/helpers/test_user.sql
+\i test/helpers/use_test_user.sql
 
 SET count_nulls.test_schema_version = :'version';
 
