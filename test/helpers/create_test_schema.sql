@@ -42,11 +42,11 @@ END
 $$;
 
 /*
- * This file exists to install count_nulls, so a foreign-owned extension
- * here is always an error - passing a non-'existing' mode says so. If
- * that stops being true, use_test_user.sql raises loudly, not silently.
+ * :count_nulls_load_mode must already be set by the caller (test/install/
+ * load.sql, or bin/test_existing's -v on the command line) - this file
+ * installs count_nulls, so it can't know on its own whether that's
+ * genuinely a fresh/update run rather than 'existing'.
  */
-\set count_nulls_load_mode 'fresh'
 \i test/helpers/use_test_user.sql
 
 /*

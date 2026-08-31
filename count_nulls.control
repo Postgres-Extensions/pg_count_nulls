@@ -4,6 +4,6 @@ default_version = 'stable'
 relocatable = false
 # Pure SQL functions, nothing privileged - anyone with CREATE on the target
 # schema can install it. Enforced by the suite running as a non-superuser
-# (test/helpers/test_user.sql), which fails outright if this reverts to the
+# (test/helpers/use_test_user.sql), which fails outright if this reverts to the
 # default.
 superuser = false

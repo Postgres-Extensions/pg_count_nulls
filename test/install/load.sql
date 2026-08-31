@@ -24,7 +24,7 @@
  * Read without missing_ok: a genuinely unpropagated GUC must fail loudly,
  * not be indistinguishable from a deliberately empty one.
  */
-SELECT current_setting('count_nulls.test_load_mode')              AS count_nulls_test_load_mode
+SELECT current_setting('count_nulls.test_load_mode')              AS count_nulls_load_mode
      , current_setting('count_nulls.test_load_mode') = 'update'   AS count_nulls_update_mode
      , current_setting('count_nulls.test_load_mode') = 'existing' AS count_nulls_existing_mode
 \gset
