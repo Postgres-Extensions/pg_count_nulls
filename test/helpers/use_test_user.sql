@@ -42,19 +42,34 @@ CREATE OR REPLACE FUNCTION pg_temp.count_nulls_prepare_test_user(
 ) RETURNS name LANGUAGE plpgsql AS $body$
 DECLARE
   /*
-   * The managed-cloud analogues of superuser. None of them carry the
-   * rolsuper attribute - that's the whole point of them - so the rolsuper
-   * check below can't see them and they have to be named explicitly. AWS
-   * RDS and Aurora call it rds_superuser, Cloud SQL cloudsqlsuperuser,
-   * Azure Flexible Server azure_pg_admin.
+   * The managed-cloud analogues of superuser: AWS RDS and Aurora's
+   * rds_superuser, Cloud SQL's cloudsqlsuperuser, Azure Flexible Server's
+   * azure_pg_admin. None carries the rolsuper attribute - that's the whole
+   * point of them - so rolsuper and is_superuser can't see them and they
+   * have to be named. Both checks below treat them as equivalent to
+   * superuser: enough to set the test user up, and disqualifying for the
+   * test user itself.
    */
   c_managed_superuser_roles CONSTANT name[] :=
     '{rds_superuser,cloudsqlsuperuser,azure_pg_admin}'
   ;
-  v_role name;
+
+  /*
+   * Joining pg_roles rather than naming the roles to pg_has_role() keeps the
+   * ones that don't exist on this cluster out of it entirely - it errors on
+   * a role that isn't there. MEMBER, not USAGE, is deliberately over-strict:
+   * it counts a role that merely *could* SET ROLE without having done so.
+   */
+  c_admin CONSTANT boolean := current_setting('is_superuser') = 'on' OR EXISTS(
+    SELECT 1 FROM pg_roles
+     WHERE rolname = ANY(c_managed_superuser_roles)
+       AND pg_has_role(current_user, oid, 'MEMBER')
+  );
+
   c_extension_owner CONSTANT name := (
     SELECT pg_get_userbyid(extowner) FROM pg_extension WHERE extname = 'count_nulls'
   );
+  v_disqualifying name;
 BEGIN
   /*
    * An already-installed count_nulls belonging to somebody else is one a
@@ -83,9 +98,18 @@ BEGIN
     RETURN current_user;
   END IF;
 
-  IF current_setting('is_superuser') = 'on' THEN
+  IF c_admin THEN
     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = p_test_user) THEN
       EXECUTE format('CREATE ROLE %I', p_test_user);
+    END IF;
+
+    /*
+     * A real superuser can already SET ROLE to anything. A managed-cloud
+     * admin can't, even to a role it just created: from PG16 a CREATEROLE
+     * creator gets ADMIN on that role, which is not the same as SET.
+     */
+    IF current_setting('is_superuser') = 'off' THEN
+      EXECUTE format('GRANT %I TO %I', p_test_user, current_user);
     END IF;
 
     /*
@@ -111,7 +135,7 @@ BEGIN
 
   IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = p_test_user) THEN
     RAISE EXCEPTION
-      'role "%" does not exist, and this session is not a superuser so it cannot be created'
+      'role "%" does not exist, and this session cannot create it'
       , p_test_user
     ;
   END IF;
@@ -120,25 +144,16 @@ BEGIN
     RAISE EXCEPTION 'test user "%" must not be a superuser', p_test_user;
   END IF;
 
-  FOREACH v_role IN ARRAY c_managed_superuser_roles LOOP
-    /*
-     * Whether the role exists has to be settled in its own statement:
-     * pg_has_role() errors outright on one that doesn't, and SQL promises
-     * no evaluation order between the two halves of an AND.
-     *
-     * MEMBER, not USAGE, is deliberately over-strict: it also rejects a
-     * role that merely *could* SET ROLE to one of these without ever having
-     * done so, which isn't the same as holding the privileges. Simpler than
-     * reasoning about when it would actually matter, and nothing needs the
-     * looser check yet.
-     */
-    IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
-      IF pg_has_role(p_test_user, v_role, 'MEMBER') THEN
-        RAISE EXCEPTION
-          'test user "%" must not be granted %', p_test_user, v_role;
-      END IF;
-    END IF;
-  END LOOP;
+  SELECT rolname INTO v_disqualifying
+    FROM pg_roles
+   WHERE rolname = ANY(c_managed_superuser_roles)
+     AND pg_has_role(p_test_user, oid, 'MEMBER')
+  ;
+
+  IF v_disqualifying IS NOT NULL THEN
+    RAISE EXCEPTION
+      'test user "%" must not be granted %', p_test_user, v_disqualifying;
+  END IF;
 
   RETURN p_test_user;
 END
