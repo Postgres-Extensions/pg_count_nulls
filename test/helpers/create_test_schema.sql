@@ -41,6 +41,11 @@ BEGIN
 END
 $$;
 
+/*
+ * Never reached in existing mode - see this file's own header - so a
+ * literal is enough; there's no GUC to lose by not reading it.
+ */
+\set count_nulls_load_mode 'fresh'
 \i test/helpers/use_test_user.sql
 
 /*

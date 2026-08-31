@@ -34,11 +34,18 @@ RESET ROLE;
  * where psql reports it as an invalid command and then carries straight on
  * into the branch it should have skipped. (\gset, below, is fine - 9.3.)
  *
+ * p_load_mode must come from the caller, not from reading
+ * count_nulls.test_load_mode in here: the Makefile only exports that GUC via
+ * PGOPTIONS for pg_regress sessions, and bin/test_existing's prepare-old
+ * invokes psql directly without it. Every includer sets the psql variable
+ * count_nulls_load_mode before \i-ing this file.
+ *
  * TODO: collapse this into a \gset + \if once 10 is the oldest version
  * supported - the plpgsql is only here to work around \if's absence.
  */
 CREATE OR REPLACE FUNCTION pg_temp.count_nulls_prepare_test_user(
   p_test_user name
+  , p_load_mode text
 ) RETURNS name LANGUAGE plpgsql AS $body$
 DECLARE
   /*
@@ -93,9 +100,22 @@ BEGIN
    *
    * Nothing is lost by not switching here: existing mode installs nothing,
    * so it was never the leg proving the install works unprivileged.
+   *
+   * Scoped to existing mode only. In fresh/update, a foreign-owned
+   * count_nulls isn't a preserved pg_upgrade artifact - it's a leftover this
+   * run's cleanup failed to reach - and silently keeping the connecting
+   * role would run the whole suite as its (often superuser) privileges
+   * without ever exercising the switch this file exists to make.
    */
   IF c_extension_owner IS NOT NULL AND c_extension_owner <> p_test_user THEN
-    RETURN current_user;
+    IF p_load_mode = 'existing' THEN
+      RETURN current_user;
+    END IF;
+
+    RAISE EXCEPTION
+      'count_nulls is owned by "%", not test user "%", and load mode "%" expects no pre-existing installation'
+      , c_extension_owner, p_test_user, p_load_mode
+    ;
   END IF;
 
   IF c_admin THEN
@@ -159,7 +179,7 @@ BEGIN
 END
 $body$;
 
-SELECT pg_temp.count_nulls_prepare_test_user(:'test_user') AS count_nulls_run_as
+SELECT pg_temp.count_nulls_prepare_test_user(:'test_user', :'count_nulls_load_mode') AS count_nulls_run_as
 \gset
 
 SET ROLE :"count_nulls_run_as";
