@@ -79,33 +79,16 @@ DECLARE
   v_disqualifying name;
 BEGIN
   /*
-   * An already-installed count_nulls belonging to somebody else is one a
-   * real pg_upgrade restored, and it can only be managed by its owner - so
-   * stay as we are rather than switching to a role that can't drop it.
+   * In existing mode, an extension owned by someone else is tolerated - the
+   * test user can't manage it, so stay as the connecting role. Any other
+   * mode treats this as an error: silently staying would run the suite
+   * with the connecting role's (often superuser) privileges, proving
+   * nothing.
    *
-   * PostgreSQL has no ALTER EXTENSION ... OWNER TO, so pg_dump has no way
-   * to carry an extension's ownership across: --binary-upgrade emits
-   * binary_upgrade_create_empty_extension(), which takes no owner, and the
-   * extension ends up belonging to whoever ran the restore. Its member
-   * functions DO keep their owner, so only the extension object itself is
-   * out of reach - which is exactly what test__shutdown__drop_all needs.
-   *
-   * Don't expect a newer PostgreSQL to retire this branch. extowner has had
-   * no matching ALTER EXTENSION ... OWNER TO since it was added in 2011,
-   * because what that should do to the contained objects was never settled
-   * (handing a non-superuser a C-language handler function is the awkward
-   * case). Reported as BUG #18625 and acknowledged as a known shortcoming,
-   * still unfixed. pg_dump's --use-set-session-authorization does dodge it,
-   * but pg_upgrade offers no way to ask for that.
-   *
-   * Nothing is lost by not switching here: existing mode installs nothing,
-   * so it was never the leg proving the install works unprivileged.
-   *
-   * Scoped to existing mode only. In fresh/update, a foreign-owned
-   * count_nulls isn't a preserved pg_upgrade artifact - it's a leftover this
-   * run's cleanup failed to reach - and silently keeping the connecting
-   * role would run the whole suite as its (often superuser) privileges
-   * without ever exercising the switch this file exists to make.
+   * PostgreSQL has no ALTER EXTENSION ... OWNER TO, so pg_upgrade can't
+   * preserve extension ownership (BUG #18625) - which is why existing mode
+   * can meet a foreign owner at all. Member functions keep their owner;
+   * only the extension object doesn't.
    */
   IF c_extension_owner IS NOT NULL AND c_extension_owner <> p_test_user THEN
     IF p_load_mode = 'existing' THEN

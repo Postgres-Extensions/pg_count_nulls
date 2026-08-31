@@ -42,8 +42,9 @@ END
 $$;
 
 /*
- * Never reached in existing mode - see this file's own header - so a
- * literal is enough; there's no GUC to lose by not reading it.
+ * This file exists to install count_nulls, so a foreign-owned extension
+ * here is always an error - passing a non-'existing' mode says so. If
+ * that stops being true, use_test_user.sql raises loudly, not silently.
  */
 \set count_nulls_load_mode 'fresh'
 \i test/helpers/use_test_user.sql
@@ -58,13 +59,13 @@ SELECT 'count_nulls test schema ' || substr(md5(random()::text), 1, 12) AS schem
 
 CREATE SCHEMA :"schema";
 
+SELECT CASE WHEN :'version' = 'current' THEN '' ELSE format(' VERSION %L', :'version') END AS version_clause
+\gset
+
 /*
  * WITH SCHEMA rather than arranging search_path first: this way a
  * successful install proves the install script doesn't depend on
  * unqualified name resolution, instead of hiding it behind a search_path
  * that happened to suit.
  */
-SELECT CASE WHEN :'version' = 'current' THEN '' ELSE format(' VERSION %L', :'version') END AS version_clause
-\gset
-
 CREATE EXTENSION count_nulls WITH SCHEMA :"schema":version_clause;
