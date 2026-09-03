@@ -1,16 +1,14 @@
 /*
- * Intentionally empty. test/install/load.sql now installs count_nulls once,
- * committed, before test/sql/ runs (see its header comment), so this
- * per-test file no longer has anything to do.
+ * Per-test-session setup: pgxntool's setup.sql `\i`s this for every file
+ * under test/sql/. See pgxntool/README.asc's "test/install" section for why
+ * installing count_nulls is not done here.
  *
- * Can't be deleted: pgxntool/test/pgxntool/setup.sql (vendored, never
- * hand-edited) unconditionally does `\i test/deps.sql`, so every test
- * session's setup would fail without it. It's also one of only two files
- * (.gitignore, test/deps.sql) that pgxntool's subtree-sync reconciliation
- * tracks and 3-way-merges on every `git subtree pull`.
- *
- * Kept for future use: add per-test dependency statements here again if a
- * genuine need arises - e.g. relaying a value into the per-test session via
- * a psql variable - same role this file played before test/install took
- * over installing count_nulls.
+ * Read without missing_ok: a genuinely unpropagated GUC must fail loudly,
+ * not be indistinguishable from a deliberately empty one. (current_setting's
+ * missing_ok argument is 9.6 anyway, and CI covers 9.4.) These are real
+ * pg_regress sessions, so the Makefile has exported it via PGOPTIONS.
  */
+SELECT current_setting('count_nulls.test_load_mode') AS count_nulls_load_mode
+\gset
+
+\i test/helpers/use_test_user.sql

@@ -47,10 +47,13 @@ You need to run the test suite using a super user, such as the default
     make test PGUSER=postgres
 
 Once count_nulls is installed, you can add it to a database. If you're running
-PostgreSQL 9.1.0 or greater, it's a simple as connecting to a database as a
-super user and running:
+PostgreSQL 9.1.0 or greater, it's as simple as connecting to a database and
+running:
 
     CREATE EXTENSION count_nulls;
+
+No superuser required: count_nulls is nothing but SQL functions, so any role
+with `CREATE` on the target schema can add it.
 
 If you've upgraded your cluster to PostgreSQL 9.1 and already had count_nulls
 installed, you can upgrade it to a properly packaged extension with:
