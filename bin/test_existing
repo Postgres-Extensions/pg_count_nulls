@@ -183,9 +183,11 @@ update_ext() {
 
 # CREATE EXTENSION count_nulls at VERSION, into a freshly, randomly
 # generated schema - shared with test/install/load.sql's own fresh/update
-# installs via test/helpers/create_test_schema.sql (see that file for the
-# full rationale). This invocation sets no count_nulls.test_load_mode GUC,
-# so count_nulls_load_mode is supplied here instead: it's a genuine fresh
+# installs via test/helpers/extension_installer.sql (see that file for the
+# full rationale). create_test_schema.sql is a thin wrapper that calls it,
+# and is a file only so this script can invoke it standalone. This
+# invocation sets no count_nulls.test_load_mode GUC, so
+# count_nulls_load_mode is supplied here instead: it's a genuine fresh
 # install (prepare-old), never 'existing'.
 create_extension_in_schema() {
   local db=$1 version=$2

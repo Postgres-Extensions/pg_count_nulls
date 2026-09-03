@@ -7,15 +7,13 @@
  * default superuser = true.
  *
  * Included from every entry point that starts a session the suite runs in:
- * test/deps.sql (each test/sql/ session, via pgxntool's setup.sql) and
- * test/helpers/create_test_schema.sql (the install session, and
- * bin/test_existing's prepare-old).
+ * test/deps.sql (each test/sql/ session, via pgxntool's setup.sql),
+ * test/install/load.sql (the install session) and
+ * test/helpers/create_test_schema.sql (bin/test_existing's prepare-old).
  *
- * The RESET ROLE below is what makes a second \i of this file in one
- * session behave exactly like the first: it hands the privileges back
- * before anything that needs them. That isn't hypothetical - psql older
- * than 10 has no \if, so test/install/load.sql's mode branches all run and
- * create_test_schema.sql gets included twice.
+ * RESET ROLE first, so what this file does depends only on how the session
+ * connected and not on anything an earlier \i of it already did - it needs
+ * the connecting role's privileges back before it can grant anything.
  */
 RESET ROLE;
 
@@ -102,6 +100,10 @@ BEGIN
   END IF;
 
   IF c_admin THEN
+    /*
+     * Check-then-create, not atomic - safe only because test/install/load.sql
+     * finishes before pg_regress starts the concurrent test/sql/ sessions.
+     */
     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = p_test_user) THEN
       EXECUTE format('CREATE ROLE %I', p_test_user);
     END IF;
