@@ -100,6 +100,10 @@ BEGIN
   END IF;
 
   IF c_admin THEN
+    /*
+     * Check-then-create, not atomic - safe only because test/install/load.sql
+     * finishes before pg_regress starts the concurrent test/sql/ sessions.
+     */
     IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = p_test_user) THEN
       EXECUTE format('CREATE ROLE %I', p_test_user);
     END IF;
