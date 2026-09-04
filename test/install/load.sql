@@ -18,10 +18,11 @@
 -- TODO: this file's mode branching could move back to \if once PG10 is the floor
 
 /*
- * Definitions only - safe to load before the test-user switch below.
- * Cleanup runs next, as the connecting role (a leftover schema can belong to
- * any role, and only the connecting one is sure to be able to drop it), then
- * the switch, then the actual install.
+ * Definitions only - safe to load before the test-user switch below. As the
+ * connecting role: cleanup (a leftover schema can belong to any role, and
+ * only the connecting one is sure to be able to drop it), then creating the
+ * schema count_nulls will go in. Only the install itself runs as the test
+ * user.
  */
 \i test/helpers/extension_installer.sql
 
@@ -35,6 +36,15 @@ SELECT pg_temp.count_nulls_cleanup_test_schemas(
   current_setting('count_nulls.test_load_mode')
 ) AS count_nulls_cleaned_up
      , current_setting('count_nulls.test_load_mode') AS count_nulls_load_mode
+\gset
+
+/*
+ * use_test_user.sql grants the test user its rights on this schema, and the
+ * grant is all it gets - so it has to exist, owned by the connecting role,
+ * before the switch.
+ */
+SELECT pg_temp.count_nulls_prepare_test_schema(:'count_nulls_load_mode')
+    AS count_nulls_grant_schema
 \gset
 
 \i test/helpers/use_test_user.sql
@@ -51,6 +61,7 @@ SELECT pg_temp.count_nulls_cleanup_test_schemas(
 CREATE OR REPLACE FUNCTION pg_temp.count_nulls_load(
   p_mode text
   , p_deploy text
+  , p_schema name
 ) RETURNS void LANGUAGE plpgsql AS $body$
 DECLARE
   -- The oldest version we still ship a full install script for
@@ -123,7 +134,7 @@ BEGIN
   END IF;
 
   IF p_mode = 'update' THEN
-    PERFORM pg_temp.count_nulls_install_extension(c_oldest_full_install);
+    PERFORM pg_temp.count_nulls_install_extension(p_schema, c_oldest_full_install);
 
     /*
      * Deliberately no client_min_messages suppression around this. Postgres
@@ -134,7 +145,7 @@ BEGIN
      */
     ALTER EXTENSION count_nulls UPDATE;
   ELSE
-    PERFORM pg_temp.count_nulls_install_extension('current');
+    PERFORM pg_temp.count_nulls_install_extension(p_schema, 'current');
   END IF;
 END
 $body$;
@@ -147,6 +158,7 @@ $body$;
 SELECT pg_temp.count_nulls_load(
     current_setting('count_nulls.test_load_mode')
     , current_setting('count_nulls.test_existing_deploy')
+    , :'count_nulls_grant_schema'
   ) AS count_nulls_loaded
 \gset
 

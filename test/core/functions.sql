@@ -1,6 +1,4 @@
-CREATE SCHEMA _null_count_test;
-
--- See bottom as well!
+-- Schema created by test/deps.sql, as the connecting role. See bottom as well!
 SET SEARCH_PATH = _null_count_test, tap;
 
 CREATE FUNCTION ncs() RETURNS name IMMUTABLE LANGUAGE sql AS $$
