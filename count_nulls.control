@@ -2,8 +2,9 @@
 comment = 'Count the number of null arguments'
 default_version = 'stable'
 relocatable = false
-# Pure SQL functions, nothing privileged - anyone with CREATE on the target
-# schema can install it. Enforced by the suite running as a non-superuser
+# Pure SQL functions, nothing privileged - anyone with USAGE and CREATE on the
+# target schema can install it, holding nothing on the database itself.
+# Enforced by the suite running as exactly such a role
 # (test/helpers/use_test_user.sql), which fails outright if this reverts to the
 # default.
 superuser = false

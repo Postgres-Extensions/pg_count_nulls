@@ -11,4 +11,14 @@
 SELECT current_setting('count_nulls.test_load_mode') AS count_nulls_load_mode
 \gset
 
+/*
+ * Where the test__* functions and their fixtures live (test/core/functions.sql
+ * puts it on search_path). Created here, by the connecting role, so that the
+ * test user needs no privilege on the database - only what use_test_user.sql
+ * grants it below on this one schema. Rolled back with the rest of the
+ * session, like every other object a test/sql/ session makes.
+ */
+CREATE SCHEMA _null_count_test;
+\set count_nulls_grant_schema _null_count_test
+
 \i test/helpers/use_test_user.sql
