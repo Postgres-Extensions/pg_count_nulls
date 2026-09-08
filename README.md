@@ -52,9 +52,6 @@ running:
 
     CREATE EXTENSION count_nulls;
 
-No superuser required: count_nulls is nothing but SQL functions, so any role
-with `CREATE` on the target schema can add it.
-
 If you've upgraded your cluster to PostgreSQL 9.1 and already had count_nulls
 installed, you can upgrade it to a properly packaged extension with:
 

@@ -4,11 +4,12 @@
  * standalone (psql -v version=<VERSION> -f); the work itself lives in
  * test/helpers/extension_installer.sql.
  *
- * The install itself runs as a non-superuser (see
- * test/helpers/use_test_user.sql), which is what proves count_nulls doesn't
- * need superuser to install. Cleanup happens before that switch: a leftover
- * schema can belong to any role, and only the connecting one is sure to be
- * able to drop it.
+ * The install itself runs as a non-superuser holding nothing but a grant on
+ * the target schema (see test/helpers/use_test_user.sql), which is what
+ * proves count_nulls needs neither superuser nor any database-level
+ * privilege. Cleanup and the schema creation happen before that switch, as
+ * the connecting role: a leftover schema can belong to any role, and only
+ * the connecting one is sure to be able to drop it.
  */
 \i test/helpers/extension_installer.sql
 
@@ -18,6 +19,9 @@
  */
 SELECT pg_temp.count_nulls_cleanup_test_schemas('fresh');
 
+SELECT pg_temp.count_nulls_prepare_test_schema('fresh') AS count_nulls_grant_schema
+\gset
+
 /*
  * :count_nulls_load_mode must already be set by the caller
  * (bin/test_existing's -v on the command line - see the file header) -
@@ -26,7 +30,9 @@ SELECT pg_temp.count_nulls_cleanup_test_schemas('fresh');
  */
 \i test/helpers/use_test_user.sql
 
-SELECT pg_temp.count_nulls_install_extension(:'version') AS count_nulls_test_schema
+SELECT pg_temp.count_nulls_install_extension(
+    :'count_nulls_grant_schema', :'version'
+  ) AS count_nulls_installed
 \gset
 
 -- vi: expandtab sw=2 ts=2

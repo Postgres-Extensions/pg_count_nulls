@@ -12,16 +12,17 @@ just defines it, leaving the caller to decide when to use it.
 - `install/load.sql` — installs count_nulls once, committed, before the
   `test/sql/` schedule, per `TEST_LOAD_SOURCE`. Its output isn't tracked; it
   fails loudly instead.
-- `deps.sql` — per-test-session setup; drops the session to the test user.
+- `deps.sql` — per-test-session setup; creates `_null_count_test` for the
+  `test__*` library to live in, then drops the session to the test user.
 - `core/functions.sql` — `ncs()`, plus the shared `test__*` library.
 - `sql/extension_tests.sql` — adds `test__check_ncs` and
   `test__shutdown__drop_all`, then calls `runtests()`.
 - `helpers/use_test_user.sql` — switches the session to the non-superuser
-  role.
+  role, granting it its rights on `:count_nulls_grant_schema` first.
 - `helpers/extension_installer.sql` — defines the functions that clean up
-  leftover test schemas and install count_nulls at a given version into a
-  fresh, randomly named one.
-- `helpers/create_test_schema.sql` — calls both, with `:version`; a file
+  leftover test schemas, produce a fresh, randomly named one, and install
+  count_nulls at a given version into it.
+- `helpers/create_test_schema.sql` — calls all three, with `:version`; a file
   only because `bin/test_existing`'s `prepare-old` runs it standalone.
 - `helpers/find_test_schema.sql` — finds that schema again, from a session
   that didn't create it.
@@ -35,6 +36,12 @@ count_nulls`). That's what makes `superuser = false` in
 `count_nulls.control` a tested property rather than a claim. See
 `helpers/use_test_user.sql`, including why it deliberately does *not* switch
 when a real `pg_upgrade` has left the extension owned by someone else.
+
+That role holds **no privilege on the database** — every schema it works in is
+created by the connecting role, which grants it `USAGE` and `CREATE` on that
+one schema and nothing else. So a regression that made installing count_nulls
+depend on database-level rights fails the suite instead of passing on a
+privilege the test role happened to have.
 
 **count_nulls is installed into a randomly named schema**, never a fixed one
 and never the default. That's what gives `core/functions.sql`'s

@@ -10,6 +10,9 @@
  * test/deps.sql (each test/sql/ session, via pgxntool's setup.sql),
  * test/install/load.sql (the install session) and
  * test/helpers/create_test_schema.sql (bin/test_existing's prepare-old).
+ * Each of them creates the schema its session works in first, as the
+ * connecting role, and names it in :count_nulls_grant_schema - the test user
+ * ends up with rights on that schema and nothing else.
  *
  * RESET ROLE first, so what this file does depends only on how the session
  * connected and not on anything an earlier \i of it already did - it needs
@@ -35,8 +38,9 @@ RESET ROLE;
  * p_load_mode must come from the caller, not from reading
  * count_nulls.test_load_mode in here: the Makefile only exports that GUC via
  * PGOPTIONS for pg_regress sessions, and bin/test_existing's prepare-old
- * invokes psql directly without it. Every includer sets the psql variable
- * count_nulls_load_mode before \i-ing this file.
+ * invokes psql directly without it. Every includer sets the psql variables
+ * count_nulls_load_mode and count_nulls_grant_schema before \i-ing this
+ * file.
  *
  * TODO: collapse this into a \gset + \if once 10 is the oldest version
  * supported - the plpgsql is only here to work around \if's absence.
@@ -44,6 +48,7 @@ RESET ROLE;
 CREATE OR REPLACE FUNCTION pg_temp.count_nulls_prepare_test_user(
   p_test_user name
   , p_load_mode text
+  , p_grant_schema name
 ) RETURNS name LANGUAGE plpgsql AS $body$
 DECLARE
   /*
@@ -118,15 +123,15 @@ BEGIN
     END IF;
 
     /*
-     * Can't fold into the CREATE ROLE above: the role is cluster-wide and
-     * outlives any one run, but this grant lives in the current database's
-     * ACL, so a run against a new database still has to issue it.
+     * The test user's entire footprint: rights on the one schema its caller
+     * already created for it, and nothing on the database. USAGE as well as
+     * CREATE because search_path skips a schema the role can't use at all.
      *
      * These two grants are all the suite gets. Anything else turning out to
      * be necessary is a finding about count_nulls, not something to grant.
      */
     EXECUTE format(
-      'GRANT CREATE ON DATABASE %I TO %I', current_database(), p_test_user
+      'GRANT USAGE, CREATE ON SCHEMA %I TO %I', p_grant_schema, p_test_user
     );
 
     /*
@@ -164,7 +169,11 @@ BEGIN
 END
 $body$;
 
-SELECT pg_temp.count_nulls_prepare_test_user(:'test_user', :'count_nulls_load_mode') AS count_nulls_run_as
+SELECT pg_temp.count_nulls_prepare_test_user(
+    :'test_user'
+    , :'count_nulls_load_mode'
+    , :'count_nulls_grant_schema'
+  ) AS count_nulls_run_as
 \gset
 
 SET ROLE :"count_nulls_run_as";
