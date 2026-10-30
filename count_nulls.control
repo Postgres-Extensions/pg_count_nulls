@@ -1,6 +1,6 @@
 # count_nulls extension
 comment = 'Count the number of null arguments'
-default_version = 'stable'
+default_version = '1.0.0'
 relocatable = false
 # Pure SQL functions, nothing privileged - anyone with USAGE and CREATE on the
 # target schema can install it, holding nothing on the database itself.
