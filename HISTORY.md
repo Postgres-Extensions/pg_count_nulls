@@ -1,7 +1,9 @@
 # count_nulls history
 
-stable
-------
+1.1.0
+-----
+
+Distribution-only release - the extension version itself stays at `1.0.0`.
 
 - Extension no longer requires superuser to install
 
