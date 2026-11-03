@@ -1,5 +1,8 @@
 # count_nulls history
 
+stable
+------
+
 1.1.0
 -----
 
