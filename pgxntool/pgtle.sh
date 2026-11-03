@@ -2,7 +2,7 @@
 #
 # pgtle.sh - Generate pg_tle registration SQL for PostgreSQL extensions
 #
-# Part of pgxntool: https://github.com/decibel/pgxntool
+# Part of pgxntool: https://github.com/Postgres-Extensions/pgxntool
 #
 # SYNOPSIS
 #   pgtle.sh --extension EXTNAME [--pgtle-version VERSION]
@@ -25,9 +25,11 @@
 #       Extension name (required). Must match a .control file basename
 #       in the current directory.
 #
-#   --pgtle-version VERSION
-#       Generate for specific pg_tle version only (optional).
-#       Format: 1.0.0-1.4.0, 1.4.0-1.5.0, or 1.5.0+
+#   --pgtle-version RANGE
+#       Generate for one pg_tle version range only (optional).
+#       Must be exactly one of: 1.0.0-1.4.0, 1.4.0-1.5.0, or 1.5.0+
+#       A plain pg_tle version (e.g. 1.5.2) is rejected, with a hint naming
+#       the range it falls in.
 #       Default: Generate all supported versions
 #
 #   --get-dir VERSION
@@ -112,7 +114,7 @@
 #   1   Error (missing files, validation failure, C code detected, etc.)
 #
 # SEE ALSO
-#   pgxntool/README-pgtle.md - Complete user guide
+#   pgxntool/README.asc, "pg_tle Support" section - Complete user guide
 #   https://github.com/aws/pg_tle - pg_tle documentation
 #
 
@@ -291,6 +293,27 @@ get_version_dir() {
     fi
 }
 
+# Die unless $1 is exactly one of PGTLE_VERSIONS. If it parses as a plain
+# pg_tle version instead, name the range --get-dir puts it in. --get-dir runs
+# as a child process because get_version_dir relies on errexit to stop on a
+# parse failure, and errexit is suspended inside an if condition.
+validate_pgtle_range() {
+    local range="$1"
+    local r
+    for r in "${PGTLE_VERSIONS[@]}"; do
+        [ "$range" = "$r" ] && return 0
+    done
+
+    local msg="invalid pg_tle version range: '$range'
+       Valid ranges: ${PGTLE_VERSIONS[*]}"
+    local dir
+    if dir=$("${BASH_SOURCE[0]}" --get-dir "$range" 2>/dev/null); then
+        msg="$msg
+       '$range' looks like a pg_tle version; did you mean ${dir#pg_tle/}?"
+    fi
+    die 1 "$msg"
+}
+
 # Get pg_tle version from installed extension
 # Returns version string or empty if not installed
 get_pgtle_version() {
@@ -407,6 +430,7 @@ parse_args() {
                 shift 2
                 ;;
             --pgtle-version)
+                validate_pgtle_range "$2"
                 PGTLE_VERSION="$2"
                 shift 2
                 ;;
@@ -620,7 +644,7 @@ validate_delimiter() {
        Found: $PGTLE_DELIMITER
        This delimiter is used internally by pgtle.sh to wrap SQL content.
        You must modify your SQL to not contain this string. If this poses a
-       serious problem, please open an issue at https://github.com/decibel/pgxntool/issues"
+       serious problem, please open an issue at https://github.com/Postgres-Extensions/pgxntool/issues"
     fi
 }
 

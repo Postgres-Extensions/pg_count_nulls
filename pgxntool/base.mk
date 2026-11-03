@@ -4,8 +4,8 @@
 # this, every target in the file gets redefined, producing
 # overriding-recipe/ignoring-old-recipe warnings. A second inclusion is a
 # harmless no-op.
-ifndef PGXNTOOL_BASE_MK_INCLUDED
-PGXNTOOL_BASE_MK_INCLUDED := 1
+ifndef _PGXNTOOL_BASE_MK_INCLUDED
+_PGXNTOOL_BASE_MK_INCLUDED := 1
 
 PGXNTOOL_DIR := pgxntool
 
@@ -39,10 +39,10 @@ meta.mk: META.json Makefile $(PGXNTOOL_DIR)/base.mk $(PGXNTOOL_DIR)/meta.mk.sh
 # These can differ, and PostgreSQL cares about the control file version.
 #
 # Find all control files first (needed for dependencies)
-PGXNTOOL_CONTROL_FILES := $(wildcard *.control)
+_PGXNTOOL_CONTROL_FILES := $(wildcard *.control)
 PGXNTOOL_distclean += control.mk
-control.mk: $(PGXNTOOL_CONTROL_FILES) Makefile $(PGXNTOOL_DIR)/base.mk $(PGXNTOOL_DIR)/control.mk.sh
-	@$(PGXNTOOL_DIR)/control.mk.sh $(PGXNTOOL_CONTROL_FILES) >$@
+control.mk: $(_PGXNTOOL_CONTROL_FILES) Makefile $(PGXNTOOL_DIR)/base.mk $(PGXNTOOL_DIR)/control.mk.sh
+	@$(PGXNTOOL_DIR)/control.mk.sh $(_PGXNTOOL_CONTROL_FILES) >$@
 
 -include control.mk
 
@@ -89,6 +89,15 @@ pgxntool_validate_yesno = $(strip \
     $(shell echo "$(1)" | tr '[:upper:]' '[:lower:]'),\
     $(error $(2) must be "yes" or "no", got "$(1)")))
 
+# Helper function: normalize a single-word variable to lowercase and validate
+# it against a list of allowed values.
+# Usage: $(call _pgxntool_validate_choice,VALUE,VARIABLE_NAME,ALLOWED_VALUES)
+# Returns the lowercase value, or errors if it isn't exactly one of ALLOWED_VALUES.
+_pgxntool_validate_choice = $(strip \
+  $(if $(and $(filter 1,$(words $(1))),$(filter $(3),$(shell echo "$(1)" | tr '[:upper:]' '[:lower:]'))),\
+    $(shell echo "$(1)" | tr '[:upper:]' '[:lower:]'),\
+    $(error $(2) must be one of: $(3); got "$(1)")))
+
 # ------------------------------------------------------------------------------
 # test-build: Sanity check extension files before running full test suite
 # ------------------------------------------------------------------------------
@@ -122,12 +131,98 @@ else
 endif
 
 # ------------------------------------------------------------------------------
+# install/installcheck: Filesystem-install the extension before testing
+# ------------------------------------------------------------------------------
+# Purpose: `test`/`verify-results` normally filesystem-install the extension
+#          (PGXS's `install`) before running pg_regress against it. That's
+#          wrong for "existing mode" testing, where the extension under test
+#          was deployed some other way (e.g. registered via pg_tle instead of
+#          the filesystem, or installed by a binary pg_upgrade) -- the whole
+#          point of that kind of test is to prove the other deployment path
+#          works, and a silent filesystem install as a side effect defeats it.
+#
+# Variable: PGXNTOOL_ENABLE_FS_INSTALL
+#   - Can be set manually in Makefile or command line
+#   - Allowed values: "yes" or "no" (case-insensitive)
+#   - Default: "yes" (enabled by default for all pgxntool projects)
+#   - Set to "no" to drop `install` from TEST_DEPS and stop `installcheck`
+#     from depending on `install`, so `make test`/`make installcheck`/
+#     `make verify-results` run against whatever is already installed
+#     instead of filesystem-installing first
+#
+# Implementation: See TEST_DEPS assembly and the `installcheck: install`
+# edge below (search for "PGXNTOOL_ENABLE_FS_INSTALL" in this file)
+#
+ifdef PGXNTOOL_ENABLE_FS_INSTALL
+  override PGXNTOOL_ENABLE_FS_INSTALL := $(call pgxntool_validate_yesno,$(PGXNTOOL_ENABLE_FS_INSTALL),PGXNTOOL_ENABLE_FS_INSTALL)
+else
+  PGXNTOOL_ENABLE_FS_INSTALL = yes
+endif
+
+# ------------------------------------------------------------------------------
+# pgtap: Auto-install the pgtap dependency via `pgxn install --sudo`
+# ------------------------------------------------------------------------------
+# Purpose: `installcheck` depends on pgtap being filesystem-installed, and
+#          auto-installs it via `pgxn install pgtap --sudo` when it isn't
+#          found already. That's itself a filesystem-install side effect --
+#          the same problem PGXNTOOL_ENABLE_FS_INSTALL above solves for the
+#          extension under test -- so it needs its own way to disable, and
+#          it makes no sense to leave it on when filesystem install is
+#          otherwise turned off.
+#
+# Variable: PGXNTOOL_ENABLE_PGXN_INSTALL
+#   - Can be set manually in Makefile or command line
+#   - Allowed values: "yes" or "no" (case-insensitive)
+#   - Default: follows PGXNTOOL_ENABLE_FS_INSTALL (off automatically
+#     whenever filesystem install is off), but can be set independently --
+#     e.g. to keep PGXNTOOL_ENABLE_FS_INSTALL=yes for your own extension
+#     while still skipping the pgxn auto-install of pgtap because it's
+#     already provided some other way
+#   - Set to "no" to make `pgtap` (and the `installcheck: pgtap` edge) a
+#     complete no-op: pg_regress runs assuming pgtap is already available
+#
+# Implementation: See pgtap target definition (search for "pgtap:" in this file)
+#
+ifdef PGXNTOOL_ENABLE_PGXN_INSTALL
+  override PGXNTOOL_ENABLE_PGXN_INSTALL := $(call pgxntool_validate_yesno,$(PGXNTOOL_ENABLE_PGXN_INSTALL),PGXNTOOL_ENABLE_PGXN_INSTALL)
+else
+  PGXNTOOL_ENABLE_PGXN_INSTALL = $(PGXNTOOL_ENABLE_FS_INSTALL)
+endif
+
+# ------------------------------------------------------------------------------
 # test/install: Run setup files before all tests in the same pg_regress session
 # ------------------------------------------------------------------------------
 # Purpose: Runs files from test/install/ before all test/sql/ files within a
 #          SINGLE pg_regress invocation via schedule files. This ensures that
 #          state created by install files (tables, extensions, etc.) persists
 #          into the main test suite.
+#
+# IMPORTANT: test/install does NOT get a real pg_regress diff, unlike every
+# other test type pgxntool supports. Its schedule entries reference the
+# original file via a relative "../install/<name>" path, so pg_regress
+# resolves BOTH the expected output and the actual output to the exact same
+# file (test/install/<name>.out) -- the actual run silently overwrites the
+# expected file in place, rather than ever comparing it against anything. A
+# content difference (wrong output, a changed column, whatever) will NEVER
+# fail this way, no matter how it changes -- see issue #97.
+#
+# The only thing that forces the build to fail is psql's own exit code: a
+# statement that raises a hard error only aborts psql (non-zero exit, which
+# pg_regress does report as a failure) if ON_ERROR_STOP is set. So it is
+# entirely up to each test/install/*.sql file to `\set ON_ERROR_STOP on` (or
+# `\i test/pgxntool/psql.sql`, which already does) if it wants failures
+# caught at all. _check-test-install-error-stop below enforces this by
+# default; see PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK to disable it.
+#
+# Why not just force `-v ON_ERROR_STOP=1` onto the psql invocation instead of
+# checking each file? Because test/install and test/sql run inside the same
+# pg_regress invocation -- forcing it there would also apply to test/sql,
+# breaking any test file that deliberately triggers an error mid-file and
+# keeps going to check what happens next, a normal pg_regress pattern.
+# That's too big an API change to make silently; the per-file opt-in keeps
+# test/sql semantics untouched.
+#
+# This is intentional, documented behavior -- not a bug to be fixed quietly.
 #
 # Variable: PGXNTOOL_ENABLE_TEST_INSTALL
 #   - Can be set manually in Makefile or command line
@@ -139,23 +234,32 @@ endif
 #
 # Directory layout (follows ~/code/extensions/archive/ pattern):
 #   test/install/*.sql      - Install SQL files
-#   test/install/*.out      - Expected output (lives alongside .sql files)
+#   test/install/*.out      - GENERATED, gitignored: rewritten by every run,
+#                             lives alongside .sql files but (per the
+#                             IMPORTANT note above) isn't meaningfully
+#                             compared, so there's nothing to commit
 #   test/install/schedule   - Auto-generated schedule file
 #   test/sql/schedule       - Auto-generated schedule file for regular tests
 #
 # The schedule files use relative paths (../install/testname) so pg_regress
 # resolves install files from their original location without copying.
 #
+# Install files run in byte-value filename order: Make's $(sort) ignores
+# locale, so the order is documented (README) and the same everywhere.
+#
 # NOTE: The variable normalization pattern below (ifdef/NORM/error/override) is
 # identical to test-build and verify-results. Refactoring options:
 #   1. A $(call normalize_bool_var,VAR,DEFAULT) Make function
 #   2. A small include fragment (e.g. pgxntool/mk/bool-var.mk)
 # Either approach would eliminate the ~10-line block repeated for each feature.
-TEST_INSTALL_SQL_FILES = $(wildcard $(TESTDIR)/install/*.sql)
+TEST_INSTALL_SQL_FILES = $(sort $(wildcard $(TESTDIR)/install/*.sql))
 ifdef PGXNTOOL_ENABLE_TEST_INSTALL
   # override needed so command-line values (make VAR=YES) are normalized, not silently ignored.
   # := needed for immediate evaluation of the function call (avoids infinite recursion with =).
   override PGXNTOOL_ENABLE_TEST_INSTALL := $(call pgxntool_validate_yesno,$(PGXNTOOL_ENABLE_TEST_INSTALL),PGXNTOOL_ENABLE_TEST_INSTALL)
+  ifeq ($(PGXNTOOL_ENABLE_TEST_INSTALL)$(strip $(TEST_INSTALL_SQL_FILES)),yes)
+    $(error no .sql files found in $(TESTDIR)/install/ (PGXNTOOL_ENABLE_TEST_INSTALL=yes))
+  endif
 else
   # Auto-detect: enable if test/install/ directory has SQL files
   ifneq ($(strip $(TEST_INSTALL_SQL_FILES)),)
@@ -164,6 +268,23 @@ else
     PGXNTOOL_ENABLE_TEST_INSTALL = no
   endif
 endif
+
+# Variable: PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK
+#   - Gates _check-test-install-error-stop (see TEST_DEPS wiring below): fails
+#     the build if a test/install/*.sql file neither includes
+#     test/pgxntool/psql.sql nor has its own `\set`/`\unset ON_ERROR_STOP`
+#     (any value counts) -- see the IMPORTANT note
+#     above for why this is the only thing standing between a hard SQL error
+#     and a silent "pass".
+#   - Allowed values: "yes" or "no" (case-insensitive)
+#   - Default: "yes"
+ifdef PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK
+  override PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK := $(call pgxntool_validate_yesno,$(PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK),PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK)
+else
+  PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK = yes
+endif
+
+_PGXNTOOL_CHECK_TEST_INSTALL_ERROR_STOP_SCRIPT ?= $(PGXNTOOL_DIR)/test/bin/check-test-install-error-stop.sh
 
 # ------------------------------------------------------------------------------
 # verify-results: Safeguard for make results
@@ -179,6 +300,8 @@ endif
 #
 # Variable: PGXNTOOL_VERIFY_RESULTS_MODE
 #   - Controls how verify-results detects test failures
+#   - Allowed values: "pgtap" or "diffs" (case-insensitive); anything else,
+#     including an empty value, is a parse-time error
 #   - "pgtap" (default): scans test/results/*.out for "not ok" lines and plan
 #     mismatches (TAP failures). Also checks regression.diffs as a fallback.
 #     Use this mode when your test suite uses pgTap.
@@ -197,9 +320,10 @@ endif
 
 # Default mode: pgtap (scans results/*.out for TAP failures)
 PGXNTOOL_VERIFY_RESULTS_MODE ?= pgtap
+override PGXNTOOL_VERIFY_RESULTS_MODE := $(call _pgxntool_validate_choice,$(PGXNTOOL_VERIFY_RESULTS_MODE),PGXNTOOL_VERIFY_RESULTS_MODE,pgtap diffs)
 
 # ------------------------------------------------------------------------------
-# check-stale-expected: catch orphaned/unexpected test/expected/ files
+# _check-stale-expected: catch orphaned/unexpected test/expected/ files
 # ------------------------------------------------------------------------------
 # Variable: PGXNTOOL_ENABLE_CHECK_STALE_EXPECTED
 #   - Can be set manually in Makefile or command line
@@ -214,16 +338,16 @@ PGXNTOOL_VERIFY_RESULTS_MODE ?= pgtap
 #   - Allowed values: "yes" or "no" (case-insensitive)
 #   - Default: "yes"
 #   - Set to "no" to disable just this sub-check while leaving the rest of
-#     check-stale-expected (the orphaned-.out check) active
+#     _check-stale-expected (the orphaned-.out check) active
 #   - Passed through to check-stale-expected.sh; see that script for the
 #     distinct error message/exit code this sub-check uses
 #
-# Variable: _CHECK_STALE_EXPECTED_SCRIPT (internal shim, not user-facing)
-#   - Path to the script the check-stale-expected target invokes
+# Variable: _PGXNTOOL_CHECK_STALE_EXPECTED_SCRIPT (internal shim, not user-facing)
+#   - Path to the script the _check-stale-expected target invokes
 #   - Default: $(PGXNTOOL_DIR)/test/bin/check-stale-expected.sh
 #
-# Implementation: See check-stale-expected target definition (search for
-# "check-stale-expected:" in this file)
+# Implementation: See _check-stale-expected target definition (search for
+# "_check-stale-expected:" in this file)
 #
 ifdef PGXNTOOL_ENABLE_CHECK_STALE_EXPECTED
   override PGXNTOOL_ENABLE_CHECK_STALE_EXPECTED := $(call pgxntool_validate_yesno,$(PGXNTOOL_ENABLE_CHECK_STALE_EXPECTED),PGXNTOOL_ENABLE_CHECK_STALE_EXPECTED)
@@ -237,7 +361,7 @@ else
   PGXNTOOL_CHECK_EXPECTED_FILE_TYPES = yes
 endif
 
-_CHECK_STALE_EXPECTED_SCRIPT ?= $(PGXNTOOL_DIR)/test/bin/check-stale-expected.sh
+_PGXNTOOL_CHECK_STALE_EXPECTED_SCRIPT ?= $(PGXNTOOL_DIR)/test/bin/check-stale-expected.sh
 
 # Generate unique database name for tests to prevent conflicts across projects
 # Uses project name + first 5 chars of md5 hash of current directory
@@ -288,21 +412,21 @@ endif
 # install files in their original location without copying.
 #
 ifeq ($(PGXNTOOL_ENABLE_TEST_INSTALL),yes)
-PGXNTOOL_INSTALL_SCHEDULE = $(TESTDIR)/install/schedule
-EXTRA_CLEAN += $(PGXNTOOL_INSTALL_SCHEDULE)
+_PGXNTOOL_INSTALL_SCHEDULE = $(TESTDIR)/install/schedule
+EXTRA_CLEAN += $(_PGXNTOOL_INSTALL_SCHEDULE)
 
 # Add install schedule; REGRESS stays as-is (regular tests run after schedule)
-REGRESS_OPTS += --schedule=$(PGXNTOOL_INSTALL_SCHEDULE)
+REGRESS_OPTS += --schedule=$(_PGXNTOOL_INSTALL_SCHEDULE)
 
 # Always regenerate schedule file to catch added/removed files
-.PHONY: $(PGXNTOOL_INSTALL_SCHEDULE)
-$(PGXNTOOL_INSTALL_SCHEDULE):
+.PHONY: $(_PGXNTOOL_INSTALL_SCHEDULE)
+$(_PGXNTOOL_INSTALL_SCHEDULE):
 	@echo "# Auto-generated - DO NOT EDIT" > $@
 	@for f in $(notdir $(basename $(TEST_INSTALL_SQL_FILES))); do \
 		echo "test: ../install/$$f" >> $@; \
 	done
 
-installcheck: $(PGXNTOOL_INSTALL_SCHEDULE)
+installcheck: $(_PGXNTOOL_INSTALL_SCHEDULE)
 endif
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
@@ -318,12 +442,18 @@ installcheck: $(TEST_RESULT_FILES) $(TEST_SQL_FILES) | $(TESTDIR)/sql/ $(TESTDIR
 # installed (CREATE EXTENSION requires the control/SQL files to be in place).
 # PGXS's own installcheck target doesn't declare that dependency -- it assumes
 # the caller runs `make install installcheck` manually. That assumption breaks
-# when something else (e.g. check-stale-expected below) depends on installcheck
+# when something else (e.g. _check-stale-expected below) depends on installcheck
 # directly: `test`'s TEST_DEPS lists install/installcheck as independent,
 # unordered prerequisites, so nothing stops installcheck's own prerequisite
 # chain from running before install. An explicit edge here, same as
-# check-stale-expected's, is the only ordering guarantee Make actually gives.
+# _check-stale-expected's, is the only ordering guarantee Make actually gives.
+#
+# Gated behind PGXNTOOL_ENABLE_FS_INSTALL (see its definition above): when
+# disabled, `installcheck` must run against whatever is already installed
+# (e.g. via pg_tle) instead of forcing a filesystem install first.
+ifeq ($(PGXNTOOL_ENABLE_FS_INSTALL),yes)
 installcheck: install
+endif
 
 #
 # TEST SUPPORT
@@ -337,7 +467,7 @@ installcheck: install
 TEST_DEPS = testdeps
 
 # ------------------------------------------------------------------------------
-# check-stale-expected: catch orphaned/unexpected test/expected/ files
+# _check-stale-expected: catch orphaned/unexpected test/expected/ files
 # ------------------------------------------------------------------------------
 # Purpose: test/expected/*.out must mirror test/sql/*.sql 1:1 (likewise
 # test/build/expected/*.out vs test/build/*.sql, when test-build is in use).
@@ -355,10 +485,31 @@ TEST_DEPS = testdeps
 # See PGXNTOOL_ENABLE_CHECK_STALE_EXPECTED / PGXNTOOL_CHECK_EXPECTED_FILE_TYPES
 # above for how to disable this entirely or just its non-.out file sub-check.
 ifeq ($(PGXNTOOL_ENABLE_CHECK_STALE_EXPECTED),yes)
-.PHONY: check-stale-expected
-check-stale-expected: installcheck
-	@$(_CHECK_STALE_EXPECTED_SCRIPT) $(TESTDIR) $(PGXNTOOL_CHECK_EXPECTED_FILE_TYPES)
-TEST_DEPS += check-stale-expected
+.PHONY: _check-stale-expected
+_check-stale-expected: installcheck
+	@$(_PGXNTOOL_CHECK_STALE_EXPECTED_SCRIPT) $(TESTDIR) $(PGXNTOOL_CHECK_EXPECTED_FILE_TYPES)
+TEST_DEPS += _check-stale-expected
+endif
+
+# ------------------------------------------------------------------------------
+# _check-test-install-error-stop: catch missing ON_ERROR_STOP in test/install
+# ------------------------------------------------------------------------------
+# Purpose: test/install/*.sql files never get a real pg_regress diff (see the
+# IMPORTANT note in the test/install section above) -- ON_ERROR_STOP is the
+# only thing that still turns a hard SQL error into a build failure. A file
+# passes if it includes test/pgxntool/psql.sql or has any `\set`/`\unset
+# ON_ERROR_STOP` command of its own. This is a pure static scan of file
+# contents, so unlike _check-stale-expected it doesn't need to run after
+# installcheck -- it needs no ordering edge at all.
+#
+# See PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK above to disable.
+ifeq ($(PGXNTOOL_ENABLE_TEST_INSTALL),yes)
+ifeq ($(PGXNTOOL_ENABLE_TEST_INSTALL_ERROR_STOP_CHECK),yes)
+.PHONY: _check-test-install-error-stop
+_check-test-install-error-stop:
+	@$(_PGXNTOOL_CHECK_TEST_INSTALL_ERROR_STOP_SCRIPT) $(TESTDIR)
+TEST_DEPS += _check-test-install-error-stop
+endif
 endif
 
 # make test: run any test dependencies, then do a `make install installcheck`.
@@ -371,7 +522,13 @@ endif
 ifeq ($(PGXNTOOL_ENABLE_TEST_BUILD),yes)
 TEST_DEPS += test-build
 endif
-TEST_DEPS += install installcheck
+# install is gated behind PGXNTOOL_ENABLE_FS_INSTALL (see its definition
+# above): when disabled, `test`/`verify-results` run against whatever is
+# already installed instead of forcing a filesystem install first.
+ifeq ($(PGXNTOOL_ENABLE_FS_INSTALL),yes)
+TEST_DEPS += install
+endif
+TEST_DEPS += installcheck
 test: $(TEST_DEPS)
 	@if [ -r $(TESTOUT)/regression.diffs ]; then cat $(TESTOUT)/regression.diffs; exit 1; fi
 
@@ -433,8 +590,8 @@ testdeps: pgtap
 # pg_tle support - Generate pg_tle registration SQL
 #
 
-# PGXNTOOL_CONTROL_FILES is defined above (for control.mk dependencies)
-PGXNTOOL_EXTENSIONS = $(basename $(PGXNTOOL_CONTROL_FILES))
+# _PGXNTOOL_CONTROL_FILES is defined above (for control.mk dependencies)
+_PGXNTOOL_EXTENSIONS = $(basename $(_PGXNTOOL_CONTROL_FILES))
 
 # Main target
 # Depend on 'all' to ensure versioned SQL files are generated first
@@ -447,8 +604,8 @@ PGXNTOOL_EXTENSIONS = $(basename $(PGXNTOOL_CONTROL_FILES))
 # "which pg_tle to test against" env var (see issue #78) -- that collided
 # with this variable silently instead of erroring.
 .PHONY: pgtle
-pgtle: all control.mk $(PGXNTOOL_CONTROL_FILES)
-	@$(foreach ext,$(PGXNTOOL_EXTENSIONS),\
+pgtle: all control.mk $(_PGXNTOOL_CONTROL_FILES)
+	@$(foreach ext,$(_PGXNTOOL_EXTENSIONS),\
 		$(PGXNTOOL_DIR)/pgtle.sh --extension $(ext) $(if $(PGXNTOOL_PGTLE_VERSION),--pgtle-version $(PGXNTOOL_PGTLE_VERSION));)
 
 #
@@ -479,8 +636,44 @@ check-pgtle:
 run-pgtle: pgtle
 	@$(PGXNTOOL_DIR)/pgtle.sh --run
 
+# Print generated pg_tle registration SQL to stdout, for consumers building
+# a combined multi-extension install file, e.g.:
+#   $(MAKE) --no-print-directory -C ../deps/cat_tools print-pgtle >> pgtle-all.sql
+# --no-print-directory is required: GNU Make auto-prints "Entering
+# directory"/"Leaving directory" to stdout for recursive invocations like
+# this one, which would otherwise corrupt the redirected file.
+# Depends on 'pgtle' so the SQL files are (re)generated first.
+# Selects the directory via PGXNTOOL_PGTLE_TARGET_VERSION if set (an actual
+# pg_tle version like 1.5.2, not a range), otherwise via the installed
+# version (pgtle.sh --get-version). Deliberately not named PGTLE_VERSION or
+# reusing PGXNTOOL_PGTLE_VERSION: a CI job's PGTLE_VERSION env var means
+# "which pg_tle to test against," a concept that can legitimately diverge
+# from "which version this printed artifact should target" -- collapsing
+# them would silently produce a plausible-but-wrong artifact on divergence.
+# PGXNTOOL_PGTLE_VERSION itself holds a range (e.g. 1.5.0+), not an exact
+# version, so it can't be reused here either.
+.PHONY: print-pgtle
+print-pgtle: pgtle
+	@version="$(PGXNTOOL_PGTLE_TARGET_VERSION)"; \
+	if [ -z "$$version" ]; then \
+		version=$$($(PGXNTOOL_DIR)/pgtle.sh --get-version 2>/dev/null); \
+		if [ -z "$$version" ]; then \
+			echo "ERROR: pg_tle version not specified and pg_tle is not installed" >&2; \
+			echo "       Set PGXNTOOL_PGTLE_TARGET_VERSION=X.Y.Z, or run 'CREATE EXTENSION pg_tle;' first" >&2; \
+			exit 1; \
+		fi; \
+	fi; \
+	pgtle_dir=$$($(PGXNTOOL_DIR)/pgtle.sh --get-dir "$$version") || exit 1; \
+	$(foreach ext,$(_PGXNTOOL_EXTENSIONS),\
+		f="$$pgtle_dir/$(ext).sql"; \
+		if [ ! -f "$$f" ]; then \
+			echo "ERROR: $$f does not exist (run 'make pgtle' first)" >&2; \
+			exit 1; \
+		fi; \
+		cat "$$f";)
+
 # These targets ensure all the relevant directories exist
-$(TESTDIR)/sql $(TESTDIR)/expected/ $(TESTOUT)/results/:
+$(TESTDIR)/sql/ $(TESTDIR)/expected/ $(TESTOUT)/results/:
 	@mkdir -p $@
 # pg_regress aborts with "could not open file" if an expected output file is
 # missing, so create empty placeholders for any test that lacks one.
@@ -500,14 +693,95 @@ ifeq ($(PGXNTOOL_ENABLE_TEST_BUILD),yes)
 TEST_BUILD_SQL_DIR = $(TESTDIR)/build/sql
 TEST_BUILD_REGRESS = $(sort $(notdir $(basename $(TEST_BUILD_SQL_FILES))))
 .PHONY: test-build
+# Gated behind PGXNTOOL_ENABLE_FS_INSTALL (see its definition above): without
+# this, test-build would force a real filesystem install even when the rest
+# of test/installcheck was told not to, defeating the point of disabling it.
+# The prerequisite is added via its own separate rule line (no recipe of its
+# own) rather than wrapping the ifeq/endif around the recipe-bearing line
+# below -- a recipe must immediately follow its own target line, and an
+# intervening `endif` would orphan it when the condition is false.
+ifeq ($(PGXNTOOL_ENABLE_FS_INSTALL),yes)
 test-build: install
+endif
+test-build:
 	@$(PGXNTOOL_DIR)/run-test-build.sh $(TESTDIR)
-	$(MAKE) -C . REGRESS="$(TEST_BUILD_REGRESS)" REGRESS_OPTS="--inputdir=$(TESTDIR)/build --outputdir=$(TESTDIR)/build" installcheck
+	$(MAKE) -C . _PGXNTOOL_TEST_BUILD_ACTIVE=yes REGRESS="$(TEST_BUILD_REGRESS)" REGRESS_OPTS="--inputdir=$(TESTDIR)/build --outputdir=$(TESTDIR)/build" installcheck
 	@if [ -r $(TESTDIR)/build/regression.diffs ]; then \
 		echo "test-build failed - see $(TESTDIR)/build/regression.diffs"; \
 		cat $(TESTDIR)/build/regression.diffs; \
 		exit 1; \
 	fi
+
+# There's no point running test/install or test/sql against a build that
+# doesn't even come up cleanly -- their results would be meaningless, so
+# test-build must run (and pass) before the main suite starts.
+#
+# Tradeoff: this also blocks the main suite on a stale/wrong
+# test/build/expected/*.out, not just a genuinely broken build -- there's
+# no `make results`-equivalent for test/build, so today that means either
+# hand-editing the expected file or using `make results-build` below.
+#
+# Guarded by _PGXNTOOL_TEST_BUILD_ACTIVE: test-build's own recipe above
+# recurses into `installcheck` to reuse PGXS's pg_regress plumbing for its
+# separate run over test/build/*.sql. Without the guard, that nested
+# installcheck would itself depend on test-build, recursing forever.
+ifneq ($(_PGXNTOOL_TEST_BUILD_ACTIVE),yes)
+installcheck: test-build
+endif
+
+# results-build: bless test/build/'s actual output as the new expected
+# output, mirroring `make results` for the main suite. Refuses to bless any
+# file whose actual output contains "ERROR:" -- accepting an errored build
+# as the new baseline would defeat the point of test-build. If a project
+# intentionally exercises an error case in test/build (e.g. verifying a
+# migration fails as expected), bless that file by hand instead:
+#   cp $(TESTDIR)/build/results/<name>.out $(TESTDIR)/build/expected/<name>.out
+#
+# This ERROR-scanning safeguard is only possible because test-build writes
+# actual output to a location genuinely separate from its expected output
+# (--inputdir/--outputdir both point at test/build, but pg_regress keeps
+# expected/ and results/ distinct there) -- test/install intentionally does
+# NOT work this way (see test/install's own comments above): its actual
+# output lands on top of its expected file, so there's nothing to diff. We
+# don't generally care about test-build's own output content, but when a
+# build genuinely errors, having a real .diff is worth the extra plumbing --
+# it points straight at the problem instead of leaving you to comb through
+# unrelated output for the one line that matters.
+#
+# Runs test-build itself instead of duplicating its run-test-build.sh +
+# installcheck steps: by the time test-build's own regression.diffs check
+# fails, the actual output results-build needs is already on disk. But
+# test-build can also fail for reasons that leave nothing fresh to bless --
+# install broke, run-test-build.sh errored, pg_regress couldn't even
+# connect -- in which case test/build/results/*.out is stale leftovers from
+# whatever run last populated it, and blessing it would silently paper over
+# the real failure instead of surfacing it. We clear regression.diffs
+# beforehand and only treat a failure as "there's a diff to bless" if it
+# comes back non-empty: pg_regress can leave a stale *empty* diffs file on
+# disk from a run that bailed before comparing anything (observed when the
+# target Postgres instance was unreachable), so mere existence isn't
+# enough. Any other failure aborts here instead of reaching the copy loop
+# below.
+.PHONY: results-build
+results-build:
+	@rm -f $(TESTDIR)/build/regression.diffs
+	$(MAKE) -C . test-build || test -s $(TESTDIR)/build/regression.diffs || { \
+		echo "results-build: test-build failed for a reason other than a diff to bless; not blessing stale output" >&2; \
+		exit 1; \
+	}
+	@mkdir -p $(TESTDIR)/build/expected
+	@skipped=0; \
+	for f in $(TESTDIR)/build/results/*.out; do \
+		[ -f "$$f" ] || continue; \
+		if grep -q 'ERROR:' "$$f"; then \
+			echo "results-build: skipping $$f (actual output contains ERROR:)" >&2; \
+			echo "  If this is intentional, bless it by hand:" >&2; \
+			echo "    cp $$f $(TESTDIR)/build/expected/$$(basename "$$f")" >&2; \
+			skipped=1; continue; \
+		fi; \
+		cp "$$f" $(TESTDIR)/build/expected/$$(basename "$$f"); \
+	done; \
+	[ "$$skipped" = 0 ] || exit 1
 endif
 
 
@@ -547,6 +821,23 @@ all: html
 
 endif # ASCIIDOC
 
+# Warn when two DOCS entries share a basename: PGXS installs DOCS into one flat
+# directory, so `install` fails with "will not overwrite just-created".
+#
+# A recipe, not a parse-time $(warning), because extensions append to DOCS after
+# including base.mk. Hung off `all` so a plain `make` reports it too.
+# The leading `:` keeps the recipe non-empty ($(warning) expands to nothing).
+# `%` is escaped because $(filter) treats it as a wildcard.
+_pgxntool_docs_named = $(strip $(foreach e,$(DOCS),$(if $(filter $(subst %,\%,$(1)),$(notdir $(e))),$(e))))
+_PGXNTOOL_DUPLICATE_DOCS = $(strip $(foreach n,$(sort $(notdir $(DOCS))),\
+    $(if $(word 2,$(call _pgxntool_docs_named,$(n))),$(n))))
+
+.PHONY: check-duplicate-docs
+check-duplicate-docs:
+	@:$(foreach n,$(_PGXNTOOL_DUPLICATE_DOCS),$(warning DOCS installs $(n) more than once (from: $(call _pgxntool_docs_named,$(n))); `make install` will fail with "will not overwrite just-created". Remove or rename all but one.))
+
+all: check-duplicate-docs
+
 .PHONY: docclean
 docclean:
 	$(RM) $(DOCS_HTML)
@@ -559,13 +850,17 @@ docclean:
 # your Makefile if you push tags somewhere other than origin.
 PGXN_REMOTE ?= origin
 
+# Fail when the tree has uncommitted or untracked changes.
+.PHONY: tree-is-clean
+tree-is-clean:
+	@test -z "$$(git status --porcelain)" || (echo 'Untracked changes!'; echo; git status; exit 1)
+
 rmtag:
 	git fetch $(PGXN_REMOTE) # Update our remotes
 	@test -z "$$(git tag --list $(PGXNVERSION))" || git tag -d $(PGXNVERSION)
 	@test -z "$$(git ls-remote --tags $(PGXN_REMOTE) $(PGXNVERSION) | grep -v '{}')" || git push --delete $(PGXN_REMOTE) $(PGXNVERSION)
 
-tag:
-	@test -z "$$(git status --porcelain)" || (echo 'Untracked changes!'; echo; git status; exit 1)
+tag: tree-is-clean
 	@# Skip if tag already exists and points to HEAD
 	@if git rev-parse $(PGXNVERSION) >/dev/null 2>&1; then \
 		if [ "$$(git rev-parse $(PGXNVERSION))" = "$$(git rev-parse HEAD)" ]; then \
@@ -578,6 +873,16 @@ tag:
 		git tag $(PGXNVERSION); \
 	fi
 	git push $(PGXN_REMOTE) $(PGXNVERSION)
+
+# Placeholder default_version set after a release.
+PGXNTOOL_POST_TAG_VERSION ?= stable
+# Test seam: bump script path.
+_PGXNTOOL_POST_TAG_VERSION_BUMP_SCRIPT ?= $(PGXNTOOL_DIR)/bump-default-version.sh
+
+# Set default_version to the placeholder after tagging a release.
+.PHONY: post-tag-version-bump
+post-tag-version-bump: tree-is-clean
+	$(_PGXNTOOL_POST_TAG_VERSION_BUMP_SCRIPT) $(PGXNTOOL_POST_TAG_VERSION) $(_PGXNTOOL_CONTROL_FILES)
 
 .PHONY: forcetag
 forcetag: rmtag tag
@@ -678,13 +983,27 @@ endif
 # $(DESTDIR)$(datadir) aren't being expanded. This can probably change after
 # the META handling stuff is it's own makefile.
 #
+#
+# This declaration is deliberately OUTSIDE the ifeq below (unlike e.g.
+# _check-stale-expected's own .PHONY, which lives inside its ifeq): testdeps'
+# own `testdeps: pgtap` prerequisite (see testdeps' definition) is
+# unconditional, so pgtap must always resolve to *some* rule. Without this
+# unconditional .PHONY, disabling the block below would leave `pgtap`
+# completely undefined, and testdeps would fail with "No rule to make
+# target 'pgtap'". An empty phony rule (no prerequisites, no recipe) is
+# exactly the harmless no-op that's needed in that case.
 .PHONY: pgtap
+# Gated behind PGXNTOOL_ENABLE_PGXN_INSTALL (see its definition above): when
+# disabled, pgtap is a no-op and pg_regress runs assuming pgtap is already
+# available some other way.
+ifeq ($(PGXNTOOL_ENABLE_PGXN_INSTALL),yes)
 installcheck: pgtap
 pgtap: $(DESTDIR)$(datadir)/extension/pgtap.control
 
 $(DESTDIR)$(datadir)/extension/pgtap.control:
 	pgxn install pgtap --sudo
+endif
 
 endif # fndef PGXNTOOL_NO_PGXS_INCLUDE
 
-endif # ifndef PGXNTOOL_BASE_MK_INCLUDED
+endif # ifndef _PGXNTOOL_BASE_MK_INCLUDED
