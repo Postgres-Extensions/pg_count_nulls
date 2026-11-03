@@ -16,7 +16,7 @@
     "name": "count_nulls",
 
     "X_comment": "REQUIRED. Version of the distribution. http://pgxn.org/spec/#version",
-    "version": "1.0.0",
+    "version": "1.1.0",
 
     "X_comment": "REQUIRED. Short description of distribution.",
     "abstract": "Count the number of null arguments",

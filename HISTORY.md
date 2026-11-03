@@ -1,7 +1,7 @@
 # count_nulls history
 
-stable
-------
+1.1.0
+-----
 
 - Extension no longer requires superuser to install
 
