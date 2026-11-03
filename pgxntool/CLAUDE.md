@@ -12,9 +12,12 @@ sequentially.
 The CI monitor lives in the pgxntool-test checkout: run
 `bash ../pgxntool-test/.claude/skills/ci/scripts/monitor-ci.sh` (the `/ci`
 skill). It monitors both repos and derives the owner from the current repo.
-Pass the exact push SHA when available — `gh run list --branch` has a race
-condition: if two pushes land close together on the same branch, `--branch`
-may pick up the wrong run. `--commit SHA` targets the exact push and avoids it.
+Pass the exact push SHA(s) as positional arguments when available (the
+script takes `[repos] [branch] [sha_pgxntool_test] [sha_pgxntool]`, not a
+`--commit` flag — see the `/ci` skill for exact usage) — `gh run list
+--branch` has a race condition: if two pushes land close together on the
+same branch, `--branch` may pick up the wrong run. An exact SHA targets
+the push directly and avoids this.
 
 ## Scope of This File
 
@@ -29,6 +32,16 @@ development must be done from the **pgxntool-test** repository, not from here. S
 
 Any agent working in an extension project should always defer to that project's own
 CLAUDE.md and instructions over anything stated here.
+
+Guidance that is about PostgreSQL itself rather than about pgxntool lives in
+`CLAUDE-POSTGRES.md` instead, so that this file stays about pgxntool.
+
+## Read `CLAUDE-POSTGRES.md`
+
+**`CLAUDE-POSTGRES.md` (next to this file) contains rules you must follow.** The `@` line
+below imports it where that is supported; read the file directly if it did not.
+
+@CLAUDE-POSTGRES.md
 
 ## Git Commit Guidelines
 
@@ -78,7 +91,7 @@ https://github.com/Postgres-Extensions/pgxntool-test
 Extension projects include pgxntool via git subtree:
 
 ```bash
-git subtree add -P pgxntool --squash git@github.com:decibel/pgxntool.git release
+git subtree add -P pgxntool --squash git@github.com:Postgres-Extensions/pgxntool.git release
 pgxntool/setup.sh
 ```
 
@@ -138,7 +151,7 @@ project/
 │   ├── deps.sql              # Load extension and test dependencies
 │   ├── sql/*.sql             # Test SQL files
 │   └── expected/*.out        # Expected test outputs
-└── doc/                       # Optional docs (*.adoc, *.asciidoc)
+└── doc/                       # Optional docs (*.adoc, *.asciidoc, *.asc)
 ```
 
 ## Commands for Extension Developers (End Users)
@@ -147,7 +160,7 @@ These are the commands extension developers use (documented for context):
 
 ```bash
 make                    # Build extension (generates versioned SQL, docs)
-make test              # Full test: testdeps → install → installcheck → show diffs
+make test              # Full test: testdeps → [test-build] → [install] → installcheck → safeguard checks → show diffs ([...] = when enabled; see Critical Testing Rules)
 make results           # Run tests and update expected output files
 make html              # Generate HTML from Asciidoc sources
 make tag               # Create git tag for current META.json version
@@ -163,17 +176,18 @@ make pgxntool-sync     # Update to latest pgxntool via git subtree pull
 ### Critical Testing Rules
 
 **NEVER use `make installcheck` directly**. Always use `make test` instead. The `make test` target ensures:
-- Correct test dependency installation (`testdeps`, and `test-build` when enabled)
-- Extension is installed before tests run (`install`)
+- Correct test dependency installation (`testdeps`, and `test-build` when enabled); `testdeps`' default `pgtap` prerequisite auto-installs pgtap via `pgxn install`, a no-op when `PGXNTOOL_ENABLE_PGXN_INSTALL=no`
+- Extension is filesystem-installed before tests run (`install`), unless `PGXNTOOL_ENABLE_FS_INSTALL=no`
 - Test comparison via `installcheck`, with diffs shown on failure
+- Safeguard checks that fail the run: the stale-expected-file check (orphaned or non-`.out` files in `test/expected/`, run after `pg_regress`), and, when `test/install` is in use, the check that every `test/install/*.sql` file sets `ON_ERROR_STOP`
 
 Note: `make test` intentionally does *not* depend on `clean` — depending on `clean` caused problems with incremental/watch-based builds (see `base.mk`). If your tests need a clean build to pass, that's a sign of a missing dependency elsewhere, not something to fix by adding `clean` back.
 
 **Database Connection Requirement**: PostgreSQL must be running before executing `make test`. If you get connection errors (e.g., "could not connect to server"), stop and ask the user to start PostgreSQL.
 
-**Claude Code MUST NEVER run `make results`**. This target updates test expected output files and requires manual human verification of test changes before execution.
+**Claude Code MUST NEVER run `make results` or `make results-build`**. Both update test expected output files and require manual human verification of test changes before execution.
 
-**Claude Code MUST NEVER modify files in `test/expected/`**. These are expected test outputs that define correct behavior and must only be updated through the `make results` workflow.
+**Claude Code MUST NEVER modify files in `test/expected/` or `test/build/expected/`**. These are expected test outputs that define correct behavior and must only be updated through the `make results`/`make results-build` workflows.
 
 The workflow is:
 1. Human runs `make test` and examines diffs
@@ -190,6 +204,11 @@ pgxntool uses PostgreSQL's pg_regress test framework:
 
 When tests fail, examine the diff output carefully. The actual test output in `test/results/` shows what your code produced, while `test/expected/` shows what was expected.
 
+**Exceptions to the above** -- `test-build` and `test/install` (both optional, see `README.asc`) don't follow the `test/results` vs `test/expected` model:
+
+- **test-build** runs first, in its own separate `pg_regress` pass over `test/build/*.sql`, and gates the main suite: if it fails, `test/install`/`test/sql` never run at all. It does compare actual vs expected normally (`test/build/results/` vs `test/build/expected/`) -- use `make results-build` to refresh its expected output, not `make results`.
+- **test/install** does NOT get a real diff at all: its actual output is written to the exact same file as its expected output, so a content difference can never fail the build, no matter what changed. The only thing that still fails the build is a hard SQL error, and only if the file has `ON_ERROR_STOP` set (directly, or via `\i test/pgxntool/psql.sql`) -- pgxntool checks for this by default, passing any file that includes `psql.sql` or has its own `\set`/`\unset ON_ERROR_STOP`, whatever the value. If a `test/install/*.sql` file is misbehaving, don't go looking for a diff; check whether it errored, and don't assume a stale-looking `.out` for it means anything.
+
 ## Key Implementation Details
 
 ### PostgreSQL Version Handling
@@ -205,7 +224,7 @@ When tests fail, examine the diff output carefully. The actual test output in `t
 
 ### Document Generation
 - Auto-detects `asciidoctor` or `asciidoc`
-- Generates HTML from `*.adoc` and `*.asciidoc` in `$(DOC_DIRS)`
+- Generates HTML from `*.adoc`, `*.asciidoc` and `*.asc` in `$(DOC_DIRS)`
 - HTML required for `make dist`, optional for `make install`
 - Template-based rules via `ASCIIDOC_template`
 
@@ -289,4 +308,3 @@ may lack such a header.
 ## Related Repositories
 
 - **pgxntool-test** - Test harness for validating pgxntool functionality: https://github.com/Postgres-Extensions/pgxntool-test
-- Never produce any kind of metrics or estimates unless you have data to back them up. If you do have data you MUST reference it.
